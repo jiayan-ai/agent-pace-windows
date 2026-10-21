@@ -40,7 +40,7 @@ public sealed class Store : IDisposable
     public Store(string? root=null,bool demo=false)
     {
         this.demo=demo;Storage=new(root??Storage.DefaultRoot);
-        try{Settings=Storage.Read<Settings>("settings.json");History=Storage.Read<History>("state.json");if(History.SelectedProvider is not("codex" or "claude"))History.SelectedProvider="codex";}catch{try{Storage.PreserveUnreadable("settings.json");Storage.PreserveUnreadable("state.json");}catch{}Settings=new();History=new();PersistenceError=L.T("本地记录无法读取，已尝试保留原文件备份。","Saved records could not be read; preserving a backup was attempted.");}
+        try{Settings=Storage.Read<Settings>("settings.json");History=Storage.Read<History>("state.json");if(History.Providers is null||History.Providers.Values.Any(h=>h is null||h.Budgets is null||h.Budgets.Values.Any(b=>b is null)||h.Snapshot is {} snap&&(snap.Windows is null||snap.Windows.Any(w=>w is null))))throw new InvalidDataException();if(History.SelectedProvider is not("codex" or "claude"))History.SelectedProvider="codex";}catch{try{Storage.PreserveUnreadable("settings.json");Storage.PreserveUnreadable("state.json");}catch{}Settings=new();History=new();PersistenceError=L.T("本地记录无法读取，已尝试保留原文件备份。","Saved records could not be read; preserving a backup was attempted.");}
         L.Language=Settings.Language is "en" or "zh-Hans"?Settings.Language:"system";
         try{var path=Path.Combine(Storage.Root,"reset-radar.json");if(File.Exists(path)&&new FileInfo(path).Length<1_048_576)Radar=System.Text.Json.JsonSerializer.Deserialize<RadarSnapshot>(File.ReadAllText(path),Json.Options);}catch{}
         Claude=new(this);

@@ -50,7 +50,7 @@ public static class CodexClient
             // Drain, discard and never log stderr (which can contain account details).
             var drain=Drain(process.StandardError,lifetime.Token);
             var input=process.StandardInput;var output=process.StandardOutput;
-            async Task Send(object value)=>await input.WriteLineAsync(JsonSerializer.Serialize(value,Json.Options).Replace("\n","").AsMemory(),lifetime.Token);
+            async Task Send(object value)=>await input.WriteLineAsync(JsonSerializer.Serialize(value).AsMemory(),lifetime.Token);
             // Use compact serialization: JSON-RPC messages must occupy one line.
             await Send(new{id=1,method="initialize",@params=new{clientInfo=new{name="agent_pace_windows",title="Agent Pace",version="1.0.0"}}});
             string? account=null;var historyDeadline=DateTimeOffset.MaxValue;
