@@ -1,5 +1,6 @@
 using System.Globalization;
 namespace AgentPace.Core;
+
 public static class L
 {
     public static string Language { get; set; } = "system";

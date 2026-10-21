@@ -9,6 +9,7 @@
 - Claude exact origin, organization membership, Fable zero usage and normalized bucket separation, auth/429 handling.
 - Monthly history filtering/deduplication, sparse patterns, reset advice and expired credits.
 - Public reset source links, freshness and date precision.
+- WebView2 isolated-world execution against synthetic intercepted HTTPS responses: organization checks, Fable normalization, GET-only requests and exclusion of unrelated response data. Uses a disposable browser profile, with no real account.
 - Windows compilation, self-contained publication, WPF rendering in English/Chinese using synthetic accounts, and three programmatic tray-panel open/hide cycles.
 
 ## Required real-device checks before calling this stable

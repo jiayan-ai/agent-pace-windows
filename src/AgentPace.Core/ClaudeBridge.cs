@@ -1,7 +1,8 @@
 namespace AgentPace.Core;
+
 public static class ClaudeBridge
 {
-    public static bool IsClaude(string? raw) => Uri.TryCreate(raw,UriKind.Absolute,out var u) && u.Scheme=="https" && u.Host=="claude.ai" && u.IsDefaultPort && u.UserInfo=="";
+    public static bool IsClaude(string? raw) => Uri.TryCreate(raw, UriKind.Absolute, out var u) && u.Scheme == "https" && u.Host == "claude.ai" && u.IsDefaultPort && u.UserInfo == "";
     public const string Script = """
 
     if (location.origin !== 'https://claude.ai') return JSON.stringify({status:401});

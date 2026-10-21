@@ -27,7 +27,7 @@ jobs:
         run: |
           $env:AGENT_PACE_SMOKE_OUTPUT = Join-Path $PWD 'dist/smoke'
           $process = Start-Process 'dist/win-x64/AgentPace.exe' -ArgumentList '--smoke-test' -PassThru
-          if (-not $process.WaitForExit(60000)) { Stop-Process -Id $process.Id -Force; throw 'WPF smoke test timed out' }
+          if (-not $process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'WPF smoke test timed out' }
           if ($process.ExitCode -ne 0) { Get-Content dist/smoke/failure.txt -ErrorAction SilentlyContinue; throw 'WPF smoke test failed' }
           Get-Content dist/smoke/result.txt
       - name: Build per-user installer

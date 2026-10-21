@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AgentPace.Core/AgentPace.Core.csproj" />
+    <Project Path="src/AgentPace.Windows/AgentPace.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AgentPace.Checks/AgentPace.Checks.csproj" />
+  </Folder>
+</Solution>
