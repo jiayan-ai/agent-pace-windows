@@ -39,7 +39,7 @@ public sealed class ClaudeSession(Store store):IDisposable
             window.Show();await browser.EnsureCoreWebView2Async(environment);window.Hide();window.Opacity=1;
             Configure(browser);
             browser.CoreWebView2.NavigationCompleted+=(_,_)=>origin.Text=Uri.TryCreate(browser.Source?.AbsoluteUri,UriKind.Absolute,out var uri)?uri.GetLeftPart(UriPartial.Authority):"";
-            browser.CoreWebView2.Navigate("https://claude.ai/settings/usage");
+            await NavigateUsage(browser.CoreWebView2,CancellationToken.None);
         }
         catch{initializing=null;browser?.Dispose();window?.Hide();throw;}
     }
@@ -73,7 +73,7 @@ public sealed class ClaudeSession(Store store):IDisposable
             await Ensure().WaitAsync(request.Token);
             var core=browser!.CoreWebView2;
             // Wait for initial navigation. Never extract cookies or access page messages.
-            if(!ClaudeBridge.IsClaude(core.Source))await WaitForClaude(core,request.Token);
+            if(!ClaudeBridge.IsClaude(core.Source)&&window?.IsVisible!=true)await NavigateUsage(core,request.Token);
             if(!ClaudeBridge.IsClaude(core.Source))throw new PaceException("请先登录 Claude。","Sign in to Claude first.",true);
             using var tree=JsonDocument.Parse(await core.CallDevToolsProtocolMethodAsync("Page.getFrameTree","{}").WaitAsync(request.Token));
             var frame=tree.RootElement.GetProperty("frameTree").GetProperty("frame");
@@ -104,12 +104,12 @@ public sealed class ClaudeSession(Store store):IDisposable
         catch(PaceException ex){message.Text=ex.Message;throw;}
         finally{if(query==request)query=null;}
     }
-    static async Task WaitForClaude(CoreWebView2 core,CancellationToken ct)
+    static async Task NavigateUsage(CoreWebView2 core,CancellationToken ct)
     {
         var completion=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Complete(object? sender,CoreWebView2NavigationCompletedEventArgs e)=>completion.TrySetResult();
         core.NavigationCompleted+=Complete;
-        try{if(ClaudeBridge.IsClaude(core.Source))return;core.Navigate("https://claude.ai/settings/usage");await completion.Task.WaitAsync(ct);}
+        try{core.Navigate("https://claude.ai/settings/usage");await completion.Task.WaitAsync(TimeSpan.FromSeconds(40),ct);}
         finally{core.NavigationCompleted-=Complete;}
     }
     public async Task Disconnect()

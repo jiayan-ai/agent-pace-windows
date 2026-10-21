@@ -51,6 +51,8 @@ Check("public reset date is evaluated in local timezone",()=>{L.Language="en";As
 Check("date-only public events do not claim precise delivery",()=>{var r=Radar();var e=r.Feed.Events![0]with{AnnouncedAt="2026-10-21",TimePrecision="day"};r=r with{Feed=r.Feed with{Events=[e]}};L.Language="en";Assert(r.Assessment(now).Title.StartsWith("No global"));});
 Check("language switch also updates existing error objects",()=>{var e=PaceException.Login();L.Language="en";Assert(e.Message.Contains("Sign in"));L.Language="zh-Hans";Assert(e.Message.Contains("订阅"));});
 Check("atomic storage and preferences round-trip",()=>{var root=Path.Combine(Path.GetTempPath(),"AgentPaceTests-"+Guid.NewGuid());try{var s=new Storage(root);s.Write("settings.json",new Settings{Language="zh-Hans",ClaudeEnabled=true});Assert(s.Read<Settings>("settings.json").Language=="zh-Hans");Assert(!File.Exists(Path.Combine(root,"settings.json.tmp")));}finally{Directory.Delete(root,true);}});
+Check("missing reset count is not silently zero",()=>{try{JsonSerializer.Deserialize<ResetCredits>("{}",Json.Options);throw new Exception("Missing count accepted");}catch(JsonException){}});
+Check("malformed date strings cannot enter public-event UI",()=>{foreach(var date in new[]{"1/1/26","yesterday","2026-10-21T12:00:00","2026-02-30"})Assert(Json.Date(date)is null);Assert(Json.Date("2026-10-21")is not null);Assert(Json.Date("2026-10-21T12:00:00+00:00")is not null);});
 ProcessStartInfo FakeStart(string mode)
 {
     var start=new ProcessStartInfo(Environment.ProcessPath!){RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false};

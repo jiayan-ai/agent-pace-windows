@@ -48,6 +48,6 @@ public static class ClaudeBridge
         return JSON.stringify({status:200, organizations, organization:org.uuid, usage});
     } catch { return JSON.stringify({status:503}); }
     finally { clearTimeout(timer); }
-    
+
 """;
 }

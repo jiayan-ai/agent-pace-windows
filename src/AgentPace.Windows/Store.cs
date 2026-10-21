@@ -12,6 +12,7 @@ public sealed class Store : IDisposable
     public readonly Storage Storage;
     public ClaudeSession Claude {get;}
     readonly Dictionary<string,PaceException> errors=[];
+    readonly bool demo;
     readonly HashSet<string> busy=[],verified=[];
     readonly Dictionary<string,DateTimeOffset> next=[],attempted=[];
     readonly CancellationTokenSource lifetime=new();
@@ -38,8 +39,8 @@ public sealed class Store : IDisposable
     }
     public Store(string? root=null,bool demo=false)
     {
-        Storage=new(root??Storage.DefaultRoot);
-        try{Settings=Storage.Read<Settings>("settings.json");History=Storage.Read<History>("state.json");if(History.SelectedProvider is not("codex" or "claude"))History.SelectedProvider="codex";}catch{PersistenceError=L.T("无法读取本地记录；请备份后检查数据目录。","Could not read saved records. Back up and inspect the data directory.");}
+        this.demo=demo;Storage=new(root??Storage.DefaultRoot);
+        try{Settings=Storage.Read<Settings>("settings.json");History=Storage.Read<History>("state.json");if(History.SelectedProvider is not("codex" or "claude"))History.SelectedProvider="codex";}catch{try{Storage.PreserveUnreadable("settings.json");Storage.PreserveUnreadable("state.json");}catch{}Settings=new();History=new();PersistenceError=L.T("本地记录无法读取，已尝试保留原文件备份。","Saved records could not be read; preserving a backup was attempted.");}
         L.Language=Settings.Language is "en" or "zh-Hans"?Settings.Language:"system";
         try{var path=Path.Combine(Storage.Root,"reset-radar.json");if(File.Exists(path)&&new FileInfo(path).Length<1_048_576)Radar=System.Text.Json.JsonSerializer.Deserialize<RadarSnapshot>(File.ReadAllText(path),Json.Options);}catch{}
         Claude=new(this);
@@ -53,7 +54,7 @@ public sealed class Store : IDisposable
         try{Storage.Write("settings.json",Settings);Storage.Write("state.json",History);PersistenceError=null;}
         catch{PersistenceError=L.T("本地记录无法保存；重启后可能重新计算预算。","Local records could not be saved; a restart may recalculate budgets.");}
     }
-    public void Language(string language){Settings.Language=language;L.Language=language;Save();Claude.RefreshLanguage();Notify();}
+    public void Language(string language){Settings.Language=language;L.Language=language;Save();Claude.RefreshLanguage();ForecastWindow.UpdateLanguage();Notify();}
     public void SelectProvider(string provider){History.SelectedProvider=provider;Save();Notify();}
     public void SelectWindow(string id){Current.SelectedId=id;Save();Notify();}
     public async Task RefreshDue(bool force=false)
@@ -68,6 +69,7 @@ public sealed class Store : IDisposable
     public async Task Refresh(string? provider=null)
     {
         provider??=Provider;
+        if(demo)return;
         if(busy.Contains(provider)||provider=="claude"&&(!Settings.ClaudeEnabled||errors.GetValueOrDefault(provider)?.NeedsLogin==true))return;
         if(errors.GetValueOrDefault(provider)?.RetrySeconds>0&&next.GetValueOrDefault(provider)>DateTimeOffset.Now)return;
         busy.Add(provider);attempted[provider]=DateTimeOffset.Now;Notify();
@@ -83,6 +85,7 @@ public sealed class Store : IDisposable
     }
     public async Task ConnectClaude()
     {
+        if(demo)return;
         Settings.ClaudeEnabled=true;if(errors.GetValueOrDefault("claude")?.NeedsLogin==true)errors.Remove("claude");Save();
         try{await Claude.ShowLogin();await Refresh("claude");}catch{errors["claude"]=new("无法打开登录窗口。请安装 Microsoft Edge WebView2 Runtime 后重试。","Could not open sign-in. Install Microsoft Edge WebView2 Runtime and retry.",true);Notify();}
     }
@@ -94,7 +97,7 @@ public sealed class Store : IDisposable
     }
     public async Task RefreshRadar()
     {
-        if(!Settings.RadarEnabled||RadarBusy||DateTimeOffset.Now<radarAttempt.AddMinutes(1))return;
+        if(demo||!Settings.RadarEnabled||RadarBusy||DateTimeOffset.Now<radarAttempt.AddMinutes(1))return;
         RadarBusy=true;radarAttempt=DateTimeOffset.Now;Notify();
         try{var value=await RadarClient.Fetch(lifetime.Token);if(Settings.RadarEnabled){Radar=value;RadarFailed=false;Storage.Write("reset-radar.json",value);}}
         catch{RadarFailed=true;}finally{RadarBusy=false;radarNext=DateTimeOffset.Now.AddMinutes(15);Notify();}

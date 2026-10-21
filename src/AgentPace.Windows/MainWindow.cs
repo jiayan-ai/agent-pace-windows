@@ -55,7 +55,10 @@ public sealed class MainWindow:Window
             else root.Children.Add(Card(Text(store.Busy?L.T("正在读取额度…","Reading usage…"):L.T("等待额度数据","Waiting for usage data"),22,true),Text(store.Provider=="codex"?L.T("安装并登录 Codex CLI；可在设置中指定 codex.exe 或 WSL 发行版。","Install and sign in to Codex CLI. Settings accepts codex.exe or a WSL distribution."):L.T("在工具内登录 Claude 后自动同步。","Connect Claude in this app to sync automatically."),13,false,muted)));
             if(store.Error is {} error)root.Children.Add(Text(error.Message,13,false,Brushes.DarkOrange));
             if(store.PersistenceError is {} persistence)root.Children.Add(Text(persistence,12,false,Brushes.DarkOrange));
-            if(store.Provider=="claude")root.Children.Add(Button(L.T("连接 / 验证 Claude","Connect / verify Claude"),async()=>await store.ConnectClaude()));
+            if(store.Provider=="claude"){
+                root.Children.Add(Button(L.T("连接 / 验证 Claude","Connect / verify Claude"),async()=>await store.ConnectClaude()));
+                if(store.Error?.Message.Contains("WebView2")==true)root.Children.Add(Button(L.T("安装 Microsoft WebView2 Runtime","Install Microsoft WebView2 Runtime"),()=>Native.OpenUrl("https://developer.microsoft.com/en-us/microsoft-edge/webview2/")));
+            }
             Settings(root);
             var footer=new WrapPanel{Margin=new Thickness(0,15,0,0)};var refresh=Button(store.Busy?L.T("同步中…","Syncing…"):L.T("刷新","Refresh"),async()=>await store.Refresh());refresh.IsEnabled=!store.Busy;footer.Children.Add(refresh);footer.Children.Add(Button(L.T("置顶","Pin window"),()=>{Topmost=!Topmost;Render();}));footer.Children.Add(Button(L.T("退出","Quit"),()=>((App)Application.Current).ExitApp()));root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步",$"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"),11,false,muted));

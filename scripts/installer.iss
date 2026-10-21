@@ -22,7 +22,9 @@ WizardStyle=modern
 CloseApplications=yes
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+#if FileExists(AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl")
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#endif
 [Tasks]
 Name: "startup"; Description: "Start Agent Pace when I sign in / 登录 Windows 时启动"; Flags: unchecked
 [Files]
