@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+dist/
+.tools/
+*.user
+*.pfx
+*.p12
+*.key
+.env*
+state.json
+settings.json
+WebView2/
+.DS_Store

@@ -1,0 +1,50 @@
+name: Windows build and checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Core and protocol regression checks
+        run: dotnet run --project tests/AgentPace.Checks -c Release
+      - name: Package standalone x64 application
+        shell: pwsh
+        run: ./scripts/package.ps1
+      - name: Render both languages and exercise tray window
+        shell: pwsh
+        run: |
+          $env:AGENT_PACE_SMOKE_OUTPUT = Join-Path $PWD 'dist/smoke'
+          $process = Start-Process 'dist/win-x64/AgentPace.exe' -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(60000)) { Stop-Process -Id $process.Id -Force; throw 'WPF smoke test timed out' }
+          if ($process.ExitCode -ne 0) { Get-Content dist/smoke/failure.txt -ErrorAction SilentlyContinue; throw 'WPF smoke test failed' }
+          Get-Content dist/smoke/result.txt
+      - name: Build per-user installer
+        shell: pwsh
+        run: |
+          $compiler = 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler unavailable on runner' }
+          & $compiler scripts/installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          Get-ChildItem dist/*-setup.exe | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_.Name | Set-Content ($_.FullName + '.sha256') }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-smoke-screenshots
+          path: dist/smoke/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Agent-Pace-Windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/*.sha256

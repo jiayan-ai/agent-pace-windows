@@ -1,0 +1,55 @@
+# Agent Pace for Windows
+
+[English](README.md) · 简体中文 · [macOS 版](https://github.com/jiayan-ai/agent-pace-mac)
+
+使用 **C# + WPF + WebView2** 的 Windows 托盘额度助手，支持 Codex 和 Claude。显示每日可用额度、Claude 五小时窗口接下来每小时的建议用量，以及醒目的重置倒计时。
+
+[下载安装包](https://github.com/jiayan-ai/agent-pace-windows/releases) · [构建检查](https://github.com/jiayan-ai/agent-pace-windows/actions)
+
+## 当前状态与安装
+
+首个 Windows Beta。自动检查覆盖计算核心、Codex 协议、Windows 编译和模拟数据的中英文界面；不代表已完成真实账户登录、多显示器缩放、睡眠唤醒或全部登录提供商的实机验证。
+
+面向 Windows 11 x64。下载 `-setup.exe` 按当前用户安装，或完整解压 ZIP 后运行 `AgentPace.exe`。应用包包含 .NET 运行时。Claude 登录和预测窗口需要 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装包尚未代码签名，可能出现 SmartScreen 提示；核对下载来源及校验文件，不要关闭系统安全保护。
+
+关闭窗口后继续在托盘运行；从菜单选择退出可彻底关闭。Windows 托盘以进度图标展示，悬停显示额度摘要，点击打开详情；置顶可保持详情可见。可在任务栏设置中将图标移出隐藏区域。
+
+## 功能
+
+- Codex / Claude 切换，各账户和额度窗口独立保存。
+- 周额度按日固定预算，超额保留负数并在详情中显示红色。
+- Claude 五小时额度动态按小时均摊；最后不足一小时显示实际剩余，到期等服务端确认。
+- Fable、Sonnet、Opus 周额度，以账户实际返回为准；Fable 同时受总周额度和五小时限制。
+- Codex Reset 券数量、到期明细、近 30 天模式和本地规则建议，不会自动使用券。
+- Tibo 公开消息、原帖来源和独立的社区预测窗口。
+- 中英文即时切换并保存，五分钟自动同步，十五秒更新倒计时，唤醒刷新和可选登录启动。
+
+## 连接账户
+
+**Codex：**先在 Windows Codex CLI 登录订阅账户。工具会查找 PATH 和常见 npm 安装目录的 `codex.exe`；找不到时在设置中手动选择可执行文件。若只在 WSL 使用 Codex，填写发行版名称；该环境须能直接执行 `codex`，无需交互式 shell。不会假定 Windows 与 WSL 共享登录状态，也不读取认证文件。API Key 登录不提供订阅额度。
+
+**Claude：**点击「连接 / 验证 Claude」，在工具自己的 `claude.ai` 网页窗口登录并完成验证，再点击「同步额度」。多个组织时需明确选择。登录会话保存在本工具 WebView2 配置中，不读取 Claude 桌面应用、Windows 凭据管理器或其他浏览器的登录信息。会话失效时可能需要重新登录；嵌入式浏览器兼容性仍需实机验证。断开会停止同步并清除此工具的 Claude 会话与额度缓存。
+
+## 计算方式
+
+每日首次成功同步时：剩余额度 ÷ 距重置天数（不足一天按一天）得到当日固定预算，之后扣除首次同步以来实际使用的额度。跨天、账户或时区变更、重置后重新分配，不重复扣除昨日超额。小幅重置时间抖动不会清空预算。
+
+五小时窗口：剩余额度 ÷ 剩余小时数；不足一小时直接显示实际剩余。这是额度百分点，不是工作分钟数。其他周额度或模型限额仍然适用。
+
+缺失不当零，旧数据明确标注。月度模式排除当天、去重、保留缺失记录，至少需要 14 天有效历史。Token 活跃度不能直接换算额度；Reset 建议是可解释规则，不是精确耗尽预测。
+
+## 隐私与开发
+
+数据保存在 `%LOCALAPPDATA%\AgentPace`，不上传使用历史，不调用模型，不自动兑换 Reset。公开消息与账户预算隔离；预测网页只在点击时打开，使用独立隐私浏览上下文，不抓取概率。卸载保留本地数据，如需清除 Claude 登录请先断开。不要将整个数据目录附在问题报告中。
+
+安装 .NET 10 SDK 后：
+
+```powershell
+dotnet run --project tests/AgentPace.Checks -c Release
+dotnet build src/AgentPace.Windows -c Release
+pwsh scripts/package.ps1
+```
+
+核心测试可在 Mac/Linux 运行，WPF 界面须在 Windows 运行。`--demo` 使用独立临时目录和模拟数据；`--smoke-test` 自动检查双语界面后退出。安装程序使用 Inno Setup 6。完整技术说明与验证范围见英文 README 和 docs 目录。
+
+与 OpenAI、Anthropic 无隶属关系。目前仓库未指定开源许可证。
