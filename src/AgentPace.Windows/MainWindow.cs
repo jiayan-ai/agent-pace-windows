@@ -93,7 +93,7 @@ public sealed class MainWindow : Window
             header.Children.Add(languages);
             var brand = new StackPanel();
             brand.Children.Add(Text("◕  Agent Pace", 23, true));
-            brand.Children.Add(Text(store.Session is null ? L.T("每日额度节奏", "Daily usage pace") : L.T("每小时额度节奏", "Hourly usage pace"), 12, false, muted));
+            brand.Children.Add(Text(store.Session is null && store.CreditPace is null ? L.T("每日额度节奏", "Daily usage pace") : L.T("每小时额度节奏", "Hourly usage pace"), 12, false, muted));
             header.Children.Add(brand);
             root.Children.Add(header);
             var providers = new UniformGridShim(2);
@@ -118,12 +118,18 @@ public sealed class MainWindow : Window
             }
             if (store.Selected is { } selected)
             {
-                if (store.Session is { } session)
+                if (store.CreditNeedsConfirmation)
+                    root.Children.Add(Card(Text(L.T("等待同步确认额度与 Reset 券", "Sync to confirm quota and reset credit"), 18, true), Text(L.T("已暂停预算建议。券到期不会自动恢复额度。", "Pacing is paused. Expiry does not restore quota."), 13, false, muted)));
+                else if (store.Session is { } session)
                     Session(root, session);
+                else if (store.CreditPace is { } credit)
+                    Credit(root, selected, credit);
                 else
                     Daily(root, selected);
                 if (store.Stale)
                     root.Children.Add(Text(L.T("显示上次记录，尚未确认最新额度", "Showing last-known usage; current quota is unconfirmed"), 12, false, Brushes.DarkOrange));
+                if (store.CreditExpired)
+                    root.Children.Add(Text(L.T("记录中的 Reset 券已到期，正在等待刷新确认；到期不会自动恢复额度。", "A recorded reset credit has expired. Refresh to confirm; expiry does not restore quota."), 12, false, Brushes.DarkOrange));
                 if (store.Provider == "codex")
                 {
                     Radar(root);
@@ -151,11 +157,20 @@ public sealed class MainWindow : Window
             footer.Children.Add(Button(L.T("退出", "Quit"), () => ((App)Application.Current).ExitApp()));
             root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步", $"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"), 11, false, muted));
-            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.1" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
+            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.2" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
             scroll.Content = root;
             scroll.ScrollToVerticalOffset(offset);
         }
         finally { rendering = false; }
+    }
+    void Credit(StackPanel root, MeteredWindow selected, CreditPace pace)
+    {
+        var deadline = Card(Text(L.T("Reset 券到期倒计时", "Reset credit expires in"), 16, true, Brushes.White), Text(pace.Countdown, 30, true, Brushes.White), Text(L.Date(pace.Expiry), 13, false, Brushes.White));
+        deadline.Background = accent;
+        root.Children.Add(deadline);
+        root.Children.Add(Card(Text(pace.FinalHour ? L.T("到期前还可使用", "Available before expiry") : L.T("接下来每小时建议可用", "Suggested hourly allowance"), 16, true, muted), Text(L.Number(pace.Allowance) + (pace.FinalHour ? "%" : L.T("% / 小时", "% / hour")), 40, true, accent), Text(pace.FinalHour ? L.T("不足一小时，显示当前周期实际剩余额度。", "Less than one hour remains; showing the actual remaining quota.") : L.T("按当前剩余额度与券到期前的小时数动态均摊。", "Current remaining quota spread evenly over the hours until credit expiry."), 13, false, muted), Text(L.T("券到期不会自动恢复额度；如需重置，请在 Codex 中手动使用。其他额度窗口仍可能限制使用。", "Expiry does not restore quota. Redeem the credit manually in Codex if needed. Other quota windows may still limit usage."), 12, false, muted)));
+        root.Children.Add(Text(L.T($"本周期剩余 {L.Number(selected.Window.Remaining)}% · 自然重置 {L.Date(selected.Window.ResetDate)}", $"This window: {L.Number(selected.Window.Remaining)}% remaining · Natural reset {L.Date(selected.Window.ResetDate)}"), 13, false, muted));
+        root.Children.Add(Progress(selected.Window.Remaining ?? 0, accent));
     }
     void Daily(StackPanel root, MeteredWindow selected)
     {

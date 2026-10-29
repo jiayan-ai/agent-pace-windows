@@ -38,10 +38,14 @@ public sealed class Store : IDisposable
     public string Provider => History.SelectedProvider;
     public ProviderHistory Current => History.For(Provider);
     public bool Busy => busy.Contains(Provider);
-    public bool Stale => !verified.Contains(Provider) || errors.ContainsKey(Provider) || Current.Snapshot is not { } s || (Now - s.FetchedAt).TotalSeconds is < 0 or > 600;
+    public bool Stale => !verified.Contains(Provider) || errors.ContainsKey(Provider) || Current.Snapshot is not { } s || (Now - s.FetchedAt).TotalSeconds is < 0 or > 600 || Provider == "codex" && HasExpiredCredit(s, Now);
+    static bool HasExpiredCredit(Snapshot snapshot, DateTimeOffset now) => snapshot.Credits is { AvailableCount: > 0 } && (snapshot.Credits.Credits ?? []).Any(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits" && c.Expiry is { } expiry && expiry <= now);
+    public bool CreditExpired => Provider == "codex" && Current.Snapshot is { } snapshot && HasExpiredCredit(snapshot, Now);
     public PaceException? Error => errors.GetValueOrDefault(Provider);
     public MeteredWindow? Selected => Current.Snapshot?.Windows.FirstOrDefault(w => w.Id == Current.SelectedId) ?? Current.Snapshot?.Windows.FirstOrDefault();
     public SessionPace? Session => Provider == "claude" && Selected?.Window.WindowDurationMins == 300 ? new(Selected.Window, Now) : null;
+    public CreditPace? CreditPace => Provider == "codex" ? AgentPace.Core.CreditPace.Evaluate(Current.Snapshot, Selected, Stale, Now) : null;
+    public bool CreditNeedsConfirmation => Provider == "codex" && AgentPace.Core.CreditPace.NeedsConfirmation(Current.Snapshot, Selected, Stale, Now);
     public DailyBudget? Budget => Selected is { } w && w.Window.ResetDate > Now && Current.Snapshot is { } s && Current.Budgets.TryGetValue(s.AccountKey + "/" + w.Id, out var b) && b.Day == TimeZoneInfo.ConvertTime(Now, TimeZoneInfo.Local).ToString("yyyy-MM-dd") && b.TimeZoneId == TimeZoneInfo.Local.Id ? b : null;
     public string Summary
     {
@@ -49,6 +53,10 @@ public sealed class Store : IDisposable
         {
             var name = Selected?.BucketId == "claude_fable" ? "Fable" : Provider == "claude" ? "Claude" : "Codex";
             var mark = Stale ? "≈" : "";
+            if (CreditNeedsConfirmation)
+                return name + " " + L.T("待同步", "Pending");
+            if (CreditPace is { } credit)
+                return name + " " + (credit.Allowance is { } a ? $"{L.Number(a)}%" + (credit.FinalHour ? " · <1h" : "/h") : L.T("待同步", "Pending"));
             if (Session is { } session)
                 return name + " " + (session.Allowance is { } a ? $"{mark}{L.Number(a)}%" + (session.FinalHour ? " · <1h" : "/h") : L.T("待同步", "Pending"));
             return name + " " + (Budget is { } b ? $"{mark}{L.Number(b.LeftToday)}%" : L.T("待同步", "Pending"));
@@ -119,7 +127,7 @@ public sealed class Store : IDisposable
         foreach (var p in new[] { "codex", "claude" })
         {
             var state = History.For(p);
-            var expired = p == "claude" && state.Snapshot?.Windows.Any(w => w.Window.ResetDate <= Now) == true;
+            var expired = state.Snapshot is { } snapshot && (p == "claude" && snapshot.Windows.Any(w => w.Window.ResetDate <= Now) || p == "codex" && HasExpiredCredit(snapshot, Now));
             if (force || !next.TryGetValue(p, out var due) || Now >= due || expired && errors.GetValueOrDefault(p)?.RetrySeconds is not > 0 && attempted.GetValueOrDefault(p) <= Now.AddMinutes(-1))
                 _ = Refresh(p);
         }

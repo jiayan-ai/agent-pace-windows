@@ -81,13 +81,14 @@ public sealed class App : Application
         if (tray is null || store is null)
             return;
         var summary = store.Summary;
-        var tooltip = summary + "\n" + (store.Session?.Countdown ?? L.Date(store.Selected?.Window.ResetDate));
+        var tooltip = summary + "\n" + (store.CreditNeedsConfirmation ? L.T("等待刷新确认 Reset 券", "Awaiting reset credit confirmation") : store.CreditPace is { } pace ? L.T("Reset 券到期：", "Reset credit expires in: ") + pace.Countdown : store.Session?.Countdown ?? L.Date(store.Selected?.Window.ResetDate));
         tray.Text = tooltip.Length > 127 ? tooltip[..127] : tooltip;
         var remaining = store.Selected?.Window.Remaining;
-        var state = $"{store.Provider}/{Math.Round(remaining ?? -1)}/{store.Budget?.OverBudget > 0}/{store.Stale}/{L.Language}";
+        var overBudget = !store.CreditNeedsConfirmation && store.CreditPace is null && store.Budget?.OverBudget > 0;
+        var state = $"{store.Provider}/{Math.Round(remaining ?? -1)}/{overBudget}/{store.Stale}/{L.Language}";
         if (state != trayState)
         {
-            var color = store.Budget?.OverBudget > 0 ? Color.IndianRed : store.Provider == "claude" ? Color.FromArgb(188, 105, 70) : Color.FromArgb(89, 88, 217);
+            var color = overBudget ? Color.IndianRed : store.Provider == "claude" ? Color.FromArgb(188, 105, 70) : Color.FromArgb(89, 88, 217);
             var icon = CreateIcon(remaining, color, store.Stale);
             tray.Icon = icon;
             trayIcon?.Dispose();
@@ -161,6 +162,29 @@ public sealed class App : Application
                 using var file = File.Create(Path.Combine(output, $"{provider}-{language}.png"));
                 encoder.Save(file);
             }
+            store!.SelectProvider("codex");
+            var codex = store.Current.Snapshot!;
+            store.Current.Ingest(codex with { Credits = new(1, [new("demo", "codexRateLimits", "available", null, store.Now.AddHours(10).ToUnixTimeSeconds(), null, null)]) });
+            foreach (var language in new[] { "en", "zh-Hans" })
+            {
+                store.Language(language);
+                details!.Render();
+                details.UpdateLayout();
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                var content = TextContent(details);
+                var heading = language == "en" ? "Suggested hourly allowance" : "接下来每小时建议可用";
+                var expires = language == "en" ? "Reset credit expires in" : "Reset 券到期倒计时";
+                if (!content.Contains(heading) || !content.Contains(expires) || !store.Summary.EndsWith("/h"))
+                    throw new InvalidOperationException("Credit pace rendering missing: " + language);
+            }
+            store.Current.Ingest(codex with { Credits = new(1, [new("demo", "codexRateLimits", "available", null, store.Now.AddSeconds(-1).ToUnixTimeSeconds(), null, null)]) });
+            store.Language("en");
+            details!.Render();
+            details.UpdateLayout();
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            var pending = TextContent(details);
+            if (!pending.Contains("Sync to confirm quota and reset credit") || pending.Contains("Available today") || !store.Summary.EndsWith("Pending"))
+                throw new InvalidOperationException("Expired credit should pause pacing");
             for (var i = 0; i < 3; i++)
             {
                 details!.Hide();
@@ -170,7 +194,7 @@ public sealed class App : Application
                 details.Hide();
             }
             await WebViewSmoke.Run();
-            File.WriteAllText(Path.Combine(output, "result.txt"), "PASS WPF localized Codex/Claude rendering, three tray open/hide cycles, and WebView2 isolated quota bridge; synthetic data only. Real account sign-in and physical DPI/wake behavior require device testing.");
+            File.WriteAllText(Path.Combine(output, "result.txt"), "PASS WPF localized Codex/Claude and credit pace rendering, three tray open/hide cycles, and WebView2 isolated quota bridge; synthetic data only. Real account sign-in and physical DPI/wake behavior require device testing.");
             ExitApp(0);
         }
         catch (Exception ex) { var output = Environment.GetEnvironmentVariable("AGENT_PACE_SMOKE_OUTPUT") ?? Path.GetTempPath(); Directory.CreateDirectory(output); File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); ExitApp(1); }

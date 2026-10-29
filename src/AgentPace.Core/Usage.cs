@@ -68,6 +68,34 @@ public sealed record SessionPace(UsageWindow Window, DateTimeOffset Now)
     public string Unit => FinalHour ? "%" : L.T("% / 小时", "% / hour");
     public string Countdown => Seconds is not { } seconds ? L.T("重置时间未知", "Reset time unknown") : seconds <= 0 ? L.T("等待重置确认", "Awaiting reset confirmation") : seconds < 60 ? L.T("不足 1 分钟", "Less than 1 minute") : seconds >= 3600 ? L.T($"{(int)Math.Ceiling(seconds / 60) / 60} 小时 {(int)Math.Ceiling(seconds / 60) % 60} 分钟", $"{(int)Math.Ceiling(seconds / 60) / 60}h {(int)Math.Ceiling(seconds / 60) % 60}m") : L.T($"{Math.Ceiling(seconds / 60):0} 分钟", $"{Math.Ceiling(seconds / 60):0}m");
 }
+// A credit's expiry is a planning deadline, not a scheduled quota reset.
+public sealed record CreditPace(UsageWindow Window, DateTimeOffset Expiry, DateTimeOffset Now)
+{
+    private SessionPace Pace => new(Window with { ResetsAt = Expiry.ToUnixTimeMilliseconds() / 1000d }, Now);
+    public bool FinalHour => Pace.FinalHour;
+    public double? Allowance => Pace.Allowance;
+    public string Countdown => Pace.Countdown;
+    public static bool NeedsConfirmation(Snapshot? snapshot, MeteredWindow? selected, bool stale, DateTimeOffset now)
+    {
+        if (snapshot?.Credits is not { AvailableCount: > 0 } credits || selected is not { BucketId: "codex" })
+            return false;
+        return (credits.Credits ?? []).Any(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits" && c.Expiry is { } expiry &&
+            (expiry <= now || credits.AvailableCount > 0 && stale && selected.Window.ResetDate is { } reset && expiry < reset));
+    }
+    public static CreditPace? Evaluate(Snapshot? snapshot, MeteredWindow? selected, bool stale, DateTimeOffset now)
+    {
+        if (stale || NeedsConfirmation(snapshot, selected, false, now) || snapshot?.Credits is not { AvailableCount: > 0 } credits || selected is not { BucketId: "codex" } ||
+            selected.Window.Remaining is null || selected.Window.WindowDurationMins is not > 0 ||
+            selected.Window.ResetDate is not { } naturalReset || naturalReset <= now)
+            return null;
+        var expiry = (credits.Credits ?? [])
+            .Where(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits")
+            .Select(c => c.Expiry)
+            .Where(e => e is not null && e > now && e < naturalReset)
+            .Min();
+        return expiry is { } deadline ? new(selected.Window, deadline, now) : null;
+    }
+}
 public sealed class ProviderHistory
 {
     public Snapshot? Snapshot

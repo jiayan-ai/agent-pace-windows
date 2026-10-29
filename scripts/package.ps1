@@ -7,7 +7,7 @@ dotnet publish src/AgentPace.Windows/AgentPace.Windows.csproj -c Release -r $Run
 if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
 Copy-Item README.md "$output/README.md"
 Copy-Item README.zh-CN.md "$output/README.zh-CN.md"
-$zip = Join-Path $PWD "dist/Agent-Pace-1.0.0-beta.1-$Runtime.zip"
+$zip = Join-Path $PWD "dist/Agent-Pace-1.0.0-beta.2-$Runtime.zip"
 Compress-Archive -Path "$output/*" -DestinationPath $zip -Force
 (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path $zip -Leaf) | Set-Content "$zip.sha256"
 Write-Output $zip
