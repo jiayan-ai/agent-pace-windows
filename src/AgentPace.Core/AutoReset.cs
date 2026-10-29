@@ -31,7 +31,7 @@ public static class AutoReset
         if (journal.Attempts.Any(a => a.AccountKey == snapshot.AccountKey && a.Outcome is null)) return null;
         // One action per five-minute window: simultaneously expiring credits cannot
         // be spent back-to-back on the same quota reset.
-        if (journal.Attempts.Any(a => a.AccountKey == snapshot.AccountKey && a.StartedAt <= now && now - a.StartedAt < TimeSpan.FromMinutes(5))) return null;
+        if (journal.Attempts.Any(a => a.AccountKey == snapshot.AccountKey && (a.StartedAt > now || now - a.StartedAt < TimeSpan.FromMinutes(5)))) return null;
         var attempt = new AutoResetAttempt(snapshot.AccountKey, credit.Id, expiry, Guid.NewGuid().ToString(), now);
         journal.Attempts.Add(attempt);
         return attempt;
