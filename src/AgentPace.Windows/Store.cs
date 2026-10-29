@@ -316,7 +316,14 @@ public sealed class Store : IDisposable
             var index = autoJournal.Attempts.IndexOf(attempt);
             if (index >= 0) autoJournal.Attempts[index] = attempt with { Outcome = result.Outcome };
             try { Storage.Write("auto-reset-journal.json", autoJournal); }
-            catch { autoJournalValid = false; AutoResetStatus = L.T("结果无法保存，请在 Codex 核对；Reset 使用已暂停。", "Could not save the result. Check Codex; further redemption is paused."); return; }
+            catch
+            {
+                autoJournalValid = false;
+                AutoResetStatus = L.T("结果无法保存，请在 Codex 核对；Reset 使用已暂停。", "Could not save the result. Check Codex; further redemption is paused.");
+                // Keep redemption paused, but still read the quota after a confirmed result.
+                await Refresh("codex", resetOwned: true);
+                return;
+            }
             AutoResetStatus = result.Outcome switch
             {
                 "reset" => L.T("Reset 券已使用，额度已请求刷新。", "Reset credit used; quota refresh requested."),
@@ -379,7 +386,13 @@ public sealed class Store : IDisposable
             var index = autoJournal.Attempts.IndexOf(attempt);
             if (index >= 0) autoJournal.Attempts[index] = attempt with { Outcome = result.Outcome };
             try { Storage.Write("auto-reset-journal.json", autoJournal); }
-            catch { autoJournalValid = false; AutoResetStatus = L.T("结果记录无法保存，自动使用已暂停；请在 Codex 确认。", "Could not save result; automatic redemption paused. Check Codex."); return; }
+            catch
+            {
+                autoJournalValid = false;
+                AutoResetStatus = L.T("结果记录无法保存，自动使用已暂停；请在 Codex 确认。", "Could not save result; automatic redemption paused. Check Codex.");
+                await Refresh("codex", resetOwned: true);
+                return;
+            }
             AutoResetStatus = result.Outcome switch {
                 "reset" => L.T("临期 Reset 券已使用。", "Expiring reset credit used."),
                 "alreadyRedeemed" => L.T("该 Reset 券已使用，请刷新确认额度。", "This credit was already redeemed. Refresh to confirm quota."),

@@ -4,7 +4,7 @@
 [Setup]
 AppId={{6E86874C-8ACD-416D-859B-072EA686F53A}
 AppName=Agent Pace
-AppVersion=1.0.0-beta.5
+AppVersion=1.0.0-beta.6
 AppPublisher=jiayan-ai
 AppPublisherURL=https://github.com/jiayan-ai/agent-pace-windows
 DefaultDirName={localappdata}\Programs\Agent Pace
@@ -13,7 +13,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
-OutputBaseFilename=Agent-Pace-1.0.0-beta.5-win-x64-setup
+OutputBaseFilename=Agent-Pace-1.0.0-beta.6-win-x64-setup
 SetupIconFile=..\src\AgentPace.Windows\Assets\AppIcon.ico
 UninstallDisplayIcon={app}\AgentPace.exe
 Compression=lzma2
