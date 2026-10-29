@@ -1,0 +1,47 @@
+name: Publish verified Windows build
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Windows build run ID
+        required: true
+      commit:
+        description: Exact commit SHA built by the run
+        required: true
+      tag:
+        description: Release tag
+        required: true
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          test "$(gh run view "$RUN_ID" --repo "$REPO" --json conclusion --jq .conclusion)" = success
+          test "$(gh run view "$RUN_ID" --repo "$REPO" --json headSha --jq .headSha)" = "$COMMIT"
+          test "$(gh run view "$RUN_ID" --repo "$REPO" --json name --jq .name)" = 'Windows build and checks'
+      - uses: actions/download-artifact@v4
+        with:
+          name: Agent-Pace-Windows
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: release
+      - name: Verify and publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd release
+          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 2
+          for checksum in ./*.sha256; do sha256sum --check "$checksum"; done
+          gh release create "$TAG" ./*.exe ./*.exe.sha256 ./*.zip ./*.zip.sha256 --repo "$REPO" --target "$COMMIT" --title "Agent Pace Windows ${TAG#v}" --prerelease --notes 'Optional automatic Codex Reset redemption can be enabled for the current account. Agent Pace checks the specific credit and attempts to redeem it within five minutes of expiry. The option is off by default. The application must be running while the device is awake and online. The server can decline a reset; quota is not additive and reset timing may change. Check Codex before resolving an uncertain result. This prerelease is unsigned.'
