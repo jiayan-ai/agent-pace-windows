@@ -255,7 +255,7 @@ public sealed class Store : IDisposable
             using var heldLock = operationLock;
             // Reload while holding the cross-process lock; another process may have
             // recorded this credit since this instance launched.
-            try { autoJournal = Storage.Read<AutoResetJournal>("auto-reset-journal.json"); if (autoJournal.Attempts is null || autoJournal.Attempts.Any(a => a is null || string.IsNullOrWhiteSpace(a.IdempotencyKey))) throw new InvalidDataException(); }
+            try { var loaded = Storage.Read<AutoResetJournal>("auto-reset-journal.json"); if (loaded.Attempts is null || loaded.Attempts.Any(a => a is null || string.IsNullOrWhiteSpace(a.IdempotencyKey))) throw new InvalidDataException(); autoJournal = loaded; }
             catch { autoJournalValid = false; AutoResetStatus = L.T("无法读取操作记录，自动使用已暂停。", "Cannot read operation journal; automatic redemption paused."); return; }
             AutoResetStatus = L.T("正在确认账户与临期券…", "Checking account and expiring credit…"); Notify();
             await Refresh("codex");
