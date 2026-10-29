@@ -38,7 +38,7 @@ Sign in to a subscription account with a Windows Codex CLI installation. Agent P
 
 Auto-discovery of every Microsoft Store / desktop-app package layout is not guaranteed. Choose the bundled `codex.exe` explicitly when needed. This app never reads `auth.json`, passwords or authentication tokens. API-key-only accounts do not provide subscription quota.
 
-The client launches a local subprocess and uses only `initialize`, `account/read`, `account/rateLimits/read` and optional `account/usage/read`. It rejects unsolicited server requests and never starts model work or redeems a reset. Missing history in older servers does not prevent quota sync.
+The client launches a local subprocess and uses `initialize`, `account/read`, `account/rateLimits/read` and optional `account/usage/read`. When automatic redemption is enabled, it also calls `account/rateLimitResetCredit/consume`, a write operation that can spend a reset credit. It rejects unsolicited server requests and never starts model work. Missing history in older servers does not prevent quota sync.
 
 ## Connect Claude
 
@@ -65,11 +65,15 @@ The daily allowance stays fixed until the next day, account/timezone change, a r
 
 When an available Codex reset credit expires within 72 hours and before the selected main Codex window's natural reset, the expiry becomes the planning deadline. The panel and tray show a rolling hourly suggestion instead of the daily balance: 50% remaining and a credit expiring in 10 hours gives **5% / hour**. During the final partial hour the app shows the actual remaining quota before expiry. When no credit meets these conditions, the normal daily budget remains in view. The calculation uses the earliest eligible credit and confirmed account data; unknown expiry times are never guessed.
 
-The credit expiring does **not** automatically reset quota. If needed, use it manually in Codex before it expires. The natural reset remains separate. If the snapshot still lists a credit as available after its recorded expiry, refresh to confirm its status.
+Credit expiry itself does **not** automatically reset quota. The natural reset remains separate. If the snapshot still lists a credit as available after its recorded expiry, refresh to confirm its status.
 
 Claude five-hour pacing uses `remaining / max(1, hoursUntilReset)`. With 60% left and three hours remaining, the allowance is **20% / hour**. With less than one hour left, the app shows the actual quota available before reset. These are percentage points, **not minutes of work**; other limits still apply.
 
 Missing data is never treated as zero. Cached/unconfirmed values are labeled and use `≈` in the hover summary. Expired windows wait for server confirmation instead of assuming restored quota.
+
+### Optional automatic reset redemption
+
+Automatic redemption is **off by default**. If enabled, Agent Pace attempts to redeem the specific available Codex reset credit five minutes before it expires. The app must be running, the PC awake and an internet connection available; a sleeping or closed app cannot guarantee an on-time attempt. The server decides eligibility and may reject a request, so redemption is not guaranteed. A reset restores eligible usage limits rather than adding unused quota to the new allowance, and can change their next reset times. Public reset announcements and forecasts do not trigger redemption. You can turn the feature off at any time.
 
 ## Reset advice and public updates
 

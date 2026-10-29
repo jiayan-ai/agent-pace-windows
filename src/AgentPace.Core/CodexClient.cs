@@ -4,6 +4,8 @@ using System.Text.Json;
 namespace AgentPace.Core;
 
 public sealed record CodexOptions(string? Executable = null, string? WslDistribution = null);
+public sealed record ConsumeRequest(string AccountKey, string CreditId, DateTimeOffset Expiry, string IdempotencyKey, Func<bool>? StillEnabled = null, Func<IDisposable>? AcquireAuthorization = null);
+public sealed record CodexResult(Snapshot Snapshot, string? Outcome);
 public static class CodexClient
 {
     public static string? FindExecutable()
@@ -52,7 +54,10 @@ public static class CodexClient
     }
     public static Task<Snapshot> Fetch(CodexOptions options, CancellationToken ct = default) => Fetch(StartInfo(options), TimeSpan.FromSeconds(35), ct);
     // This overload permits protocol integration tests against a child-process fake.
-    public static async Task<Snapshot> Fetch(ProcessStartInfo start, TimeSpan timeout, CancellationToken ct = default)
+    public static async Task<Snapshot> Fetch(ProcessStartInfo start, TimeSpan timeout, CancellationToken ct = default) => (await Exchange(start, timeout, null, ct)).Snapshot;
+    public static Task<CodexResult> Consume(CodexOptions options, ConsumeRequest request, CancellationToken ct = default) => Exchange(StartInfo(options), TimeSpan.FromSeconds(35), request, ct);
+    public static Task<CodexResult> Consume(ProcessStartInfo start, TimeSpan timeout, ConsumeRequest request, CancellationToken ct = default) => Exchange(start, timeout, request, ct);
+    static async Task<CodexResult> Exchange(ProcessStartInfo start, TimeSpan timeout, ConsumeRequest? consume, CancellationToken ct)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lifetime.CancelAfter(timeout);
@@ -87,18 +92,18 @@ public static class CodexClient
             while (!lifetime.IsCancellationRequested)
             {
                 using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                if (quota is not null)
+                if (quota is not null && consume is null)
                     readTimeout.CancelAfter(historyDeadline - DateTimeOffset.UtcNow > TimeSpan.Zero ? historyDeadline - DateTimeOffset.UtcNow : TimeSpan.FromMilliseconds(1));
                 string? line;
                 try
                 {
                     line = await ReadBoundedLine(output, readTimeout.Token);
                 }
-                catch (OperationCanceledException) when (quota is not null && !ct.IsCancellationRequested) { return quota; }
+                catch (OperationCanceledException) when (quota is not null && consume is null && !ct.IsCancellationRequested) { return new(quota, null); }
                 if (line is null)
                 {
-                    if (quota is not null)
-                        return quota;
+                    if (quota is not null && consume is null)
+                        return new(quota, null);
                     throw PaceException.Network();
                 }
                 JsonDocument doc;
@@ -125,6 +130,13 @@ public static class CodexClient
                         continue;
                     }
                     var id = m.Num("id");
+                    if (id == 4 && quota is not null && consume is not null)
+                    {
+                        var outcome = m.Get("result")?.Str("outcome");
+                        if (outcome is not ("reset" or "nothingToReset" or "noCredit" or "alreadyRedeemed"))
+                            throw PaceException.Network();
+                        return new(quota, outcome);
+                    }
                     if (id == 4 && quota is not null)
                     {
                         AccountActivity? activity = null;
@@ -134,10 +146,7 @@ public static class CodexClient
                                 activity = r.Deserialize<AccountActivity>(Json.Options)?.Recent(quota.FetchedAt);
                         }
                         catch (JsonException) { }
-                        return quota with
-                        {
-                            Activity = activity
-                        };
+                        return new(quota with { Activity = activity }, null);
                     }
                     if (id is not (1 or 2 or 3))
                         continue;
@@ -190,6 +199,15 @@ public static class CodexClient
                                 }
                                 catch (JsonException) { }
                             quota = new(account, DateTimeOffset.UtcNow, UsageParser.Codex(result), credits);
+                            if (consume is not null)
+                            {
+                                using var authorization = consume.AcquireAuthorization?.Invoke();
+                                var now = DateTimeOffset.UtcNow;
+                                if (consume.StillEnabled?.Invoke() == false || !AutoReset.IsEligible(quota, consume.AccountKey, consume.CreditId, consume.Expiry, now))
+                                    throw new PaceException("Reset 券或账户状态已变化，请刷新后确认。", "Reset credit or account changed. Refresh to confirm.");
+                                await Send(new { id = 4, method = "account/rateLimitResetCredit/consume", @params = new { idempotencyKey = consume.IdempotencyKey, creditId = consume.CreditId } });
+                                break;
+                            }
                             historyDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
                             await Send(new
                             {
@@ -200,11 +218,11 @@ public static class CodexClient
                     }
                 }
             }
-            if (quota is not null)
-                return quota;
+            if (quota is not null && consume is null)
+                return new(quota, null);
             throw PaceException.Network();
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { if (quota is not null) return quota; throw new PaceException("Codex 同步超时，请检查登录和网络。", "Codex sync timed out. Check sign-in and connection."); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { if (quota is not null && consume is null) return new(quota, null); throw new PaceException("Codex 同步超时，请检查登录和网络。", "Codex sync timed out. Check sign-in and connection."); }
         finally
         {
             lifetime.Cancel();

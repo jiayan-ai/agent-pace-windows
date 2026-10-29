@@ -132,6 +132,8 @@ public sealed class MainWindow : Window
                     root.Children.Add(Text(L.T("记录中的 Reset 券已到期，正在等待刷新确认；到期不会自动恢复额度。", "A recorded reset credit has expired. Refresh to confirm; expiry does not restore quota."), 12, false, Brushes.DarkOrange));
                 if (store.Provider == "codex")
                 {
+                    if (store.Settings.AutoResetEnabled || !string.IsNullOrEmpty(store.AutoResetStatus))
+                        root.Children.Add(Text(L.T("自动使用 Reset：", "Automatic reset: ") + (string.IsNullOrEmpty(store.AutoResetStatus) ? L.T("已开启，等待临期券", "On, waiting for an expiring credit") : store.AutoResetStatus), 12, false, muted));
                     Radar(root);
                     Insights(root);
                 }
@@ -157,7 +159,7 @@ public sealed class MainWindow : Window
             footer.Children.Add(Button(L.T("退出", "Quit"), () => ((App)Application.Current).ExitApp()));
             root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步", $"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"), 11, false, muted));
-            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.3" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
+            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.4" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
             scroll.Content = root;
             scroll.ScrollToVerticalOffset(offset);
         }
@@ -168,7 +170,7 @@ public sealed class MainWindow : Window
         var deadline = Card(Text(L.T("Reset 券到期倒计时", "Reset credit expires in"), 16, true, Brushes.White), Text(pace.Countdown, 30, true, Brushes.White), Text(L.Date(pace.Expiry), 13, false, Brushes.White));
         deadline.Background = accent;
         root.Children.Add(deadline);
-        root.Children.Add(Card(Text(pace.FinalHour ? L.T("到期前还可使用", "Available before expiry") : L.T("接下来每小时建议可用", "Suggested hourly allowance"), 16, true, muted), Text(L.Number(pace.Allowance) + (pace.FinalHour ? "%" : L.T("% / 小时", "% / hour")), 40, true, accent), Text(pace.FinalHour ? L.T("不足一小时，显示当前周期实际剩余额度。", "Less than one hour remains; showing the actual remaining quota.") : L.T("按当前剩余额度与券到期前的小时数动态均摊。", "Current remaining quota spread evenly over the hours until credit expiry."), 13, false, muted), Text(L.T("券到期不会自动恢复额度；如需重置，请在 Codex 中手动使用。其他额度窗口仍可能限制使用。", "Expiry does not restore quota. Redeem the credit manually in Codex if needed. Other quota windows may still limit usage."), 12, false, muted)));
+        root.Children.Add(Card(Text(pace.FinalHour ? L.T("到期前还可使用", "Available before expiry") : L.T("接下来每小时建议可用", "Suggested hourly allowance"), 16, true, muted), Text(L.Number(pace.Allowance) + (pace.FinalHour ? "%" : L.T("% / 小时", "% / hour")), 40, true, accent), Text(pace.FinalHour ? L.T("不足一小时，显示当前周期实际剩余额度。", "Less than one hour remains; showing the actual remaining quota.") : L.T("按当前剩余额度与券到期前的小时数动态均摊。", "Current remaining quota spread evenly over the hours until credit expiry."), 13, false, muted), Text(L.T("券到期不会自动恢复额度；可在设置中开启到期前自动使用。其他额度窗口仍可能限制使用。", "Expiry does not restore quota. Enable automatic redemption in Settings if desired. Other quota windows may still limit usage."), 12, false, muted)));
         root.Children.Add(Text(L.T($"本周期剩余 {L.Number(selected.Window.Remaining)}% · 自然重置 {L.Date(selected.Window.ResetDate)}", $"This window: {L.Number(selected.Window.Remaining)}% remaining · Natural reset {L.Date(selected.Window.ResetDate)}"), 13, false, muted));
         root.Children.Add(Progress(selected.Window.Remaining ?? 0, accent));
     }
@@ -232,7 +234,7 @@ public sealed class MainWindow : Window
             detail.Children.Add(Text(L.T("通常较忙：", "Usually busier: ") + CultureInfo.GetCultureInfo(L.Chinese ? "zh-CN" : "en-US").DateTimeFormat.GetDayName(weekday), 12));
         if (pattern.RecentRatio is { } ratio)
             detail.Children.Add(Text(L.T($"近 7 天日均 Token 活跃度为此前的 {ratio:0.0} 倍", $"Recent average daily token activity: {ratio:0.0}× the earlier period"), 12));
-        detail.Children.Add(Text(L.T("灰色表示缺失记录；Token 活跃度不等于额度百分比。只提供规则建议，不会自动使用 Reset。", "Gray means missing data. Token activity is not quota percentage. Advice is rule-based; resets are never redeemed automatically."), 12, false, muted));
+        detail.Children.Add(Text(L.T("灰色表示缺失记录；Token 活跃度不等于额度百分比。建议基于规则；可在设置中选择自动使用临期券。", "Gray means missing data. Token activity is not quota percentage. Advice is rule-based; optional automatic redemption is in Settings."), 12, false, muted));
         foreach (var c in h.Snapshot?.Credits?.Credits ?? [])
         if (c.Status == "available")
             detail.Children.Add(Text((c.Title ?? "Codex Reset") + " · " + L.Date(c.Expiry) + (c.Id == advice.PreferredCreditId ? " ★" : ""), 12));
@@ -271,6 +273,12 @@ public sealed class MainWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(Text(L.T("每日首次同步固定预算，之后扣除当天已用额度；跨天或重置后重新分配。五小时窗口按剩余小时动态均摊。", "Daily budgets are fixed at the first sync and reduced by observed usage. A new day or reset starts a new budget. Five-hour windows use a rolling hourly allowance."), 12, false, muted));
+        var autoReset = new CheckBox { Content = L.T("到期前 5 分钟自动使用 Codex Reset 券", "Automatically redeem Codex reset credits 5 minutes before expiry"), IsChecked = store.Settings.AutoResetEnabled, Foreground = foreground, Margin = new Thickness(0, 10, 0, 2) };
+        autoReset.Click += (_, _) => store.SetAutoReset(autoReset.IsChecked == true);
+        panel.Children.Add(autoReset);
+        panel.Children.Add(Text(L.T("默认关闭。需要应用运行且电脑保持清醒；会消耗临期券，额度不累加，周期可能重新开始。", "Off by default. The app must be running and the computer awake. Redemption consumes the expiring credit; quota does not stack and the cycle may restart."), 12, false, muted));
+        if (!string.IsNullOrEmpty(store.AutoResetStatus)) panel.Children.Add(Text(store.AutoResetStatus, 12, false, Brushes.DarkOrange));
+        if (store.HasPendingAutoReset) panel.Children.Add(Button(L.T("已在 Codex 核对，解除暂停", "I checked Codex; resolve pending reset"), () => { if (MessageBox.Show(L.T("请先在 Codex 确认上次 Reset 是否使用。确认后，旧券不会重新提交；其他临期券可继续自动使用。", "First check in Codex whether the previous credit was used. The old credit will not be resubmitted; other expiring credits may be redeemed."), "Agent Pace", MessageBoxButton.OKCancel) == MessageBoxResult.OK) store.ResolvePendingAutoReset(); }));
         panel.Children.Add(Text(L.T("Codex 可执行文件（可留空自动查找）", "Codex executable (empty = auto-detect)"), 12));
         var exe = new TextBox { Text = store.Settings.CodexExecutable, Margin = new Thickness(0, 4, 0, 6) };
         panel.Children.Add(exe);

@@ -10,6 +10,8 @@ public sealed class Settings
     }
     public string ClaudeOrganization { get; set; } = "";
     public bool RadarEnabled { get; set; } = true;
+    public bool AutoResetEnabled { get; set; }
+    public string AutoResetAccountKey { get; set; } = "";
     public string CodexExecutable { get; set; } = "";
     public string WslDistribution { get; set; } = "";
 }
@@ -25,6 +27,23 @@ public sealed class Storage(string root)
         if (new FileInfo(path).Length > 8_000_000)
             throw new IOException("State file too large");
         return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json.Options) ?? throw new IOException("Invalid state");
+    }
+    public bool AutoResetRevoked => File.Exists(Path.Combine(Root, "auto-reset-disabled"));
+    public void RevokeAutoReset()
+    {
+        Directory.CreateDirectory(Root);
+        File.WriteAllText(Path.Combine(Root, "auto-reset-disabled"), "disabled");
+    }
+    public void ClearAutoResetRevocation() => File.Delete(Path.Combine(Root, "auto-reset-disabled"));
+    public FileStream AcquireAutoResetAuthorizationLock()
+    {
+        Directory.CreateDirectory(Root);
+        return new FileStream(Path.Combine(Root, "auto-reset-authorization.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    }
+    public FileStream AcquireAutoResetLock()
+    {
+        Directory.CreateDirectory(Root);
+        return new FileStream(Path.Combine(Root, "auto-reset.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     }
     public void PreserveUnreadable(string name)
     {
