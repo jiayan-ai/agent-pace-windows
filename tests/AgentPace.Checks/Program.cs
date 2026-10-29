@@ -38,9 +38,60 @@ Check("expired and stale credits suspend pacing until confirmed", () => { var fu
 Check("old expired records do not suspend daily pacing or trigger expiry refresh", () => { var old = Credit(now.AddHours(-72).AddSeconds(-1).ToUnixTimeSeconds()); var far = Credit(now.AddHours(80).ToUnixTimeSeconds()); var s = Snap() with { Credits = new(2, [old, far]) }; var w = s.Windows[0]; Assert(!CreditPace.HasExpiredCreditRequiringConfirmation(s, w, now)); Assert(!CreditPace.NeedsConfirmation(s, w, false, now)); Assert(!CreditPace.NeedsConfirmation(s, w, true, now)); Assert(CreditPace.Evaluate(s, w, false, now) is null); var boundary = s with { Credits = new(1, [Credit(now.AddHours(-72).ToUnixTimeSeconds())]) }; Assert(CreditPace.HasExpiredCreditRequiringConfirmation(boundary, w, now)); Assert(CreditPace.NeedsConfirmation(boundary, w, false, now)); });
 Check("old expired record with an approaching credit requires refresh", () => { var old = Credit(now.AddHours(-73).ToUnixTimeSeconds()); var approaching = Credit(now.AddHours(70).ToUnixTimeSeconds()); var s = Snap() with { Credits = new(2, [old, approaching]) }; var w = s.Windows[0]; Assert(CreditPace.HasExpiredCreditRequiringConfirmation(s, w, now)); Assert(CreditPace.NeedsConfirmation(s, w, false, now)); Assert(CreditPace.Evaluate(s, w, false, now) is null); var sooner = w with { Window = Window(end: now.AddHours(60).ToUnixTimeSeconds()) }; Assert(!CreditPace.HasExpiredCreditRequiringConfirmation(s, sooner, now)); Assert(!CreditPace.NeedsConfirmation(s, sooner, true, now)); Assert(!CreditPace.HasExpiredCreditRequiringConfirmation(s, w with { Window = Window(null) }, now)); });
 Check("automatic reset selects only fresh, identified credits within five minutes", () => { var expiry = now.AddMinutes(5); var s = Snap() with { Credits = new(2, [Credit(expiry.ToUnixTimeSeconds()), new("later", "codexRateLimits", "available", null, now.AddMinutes(6).ToUnixTimeSeconds(), null, null)]) }; Assert(AutoReset.Due(s, now)?.Id == "id"); Assert(AutoReset.Due(s, now.AddSeconds(-1)) is null); Assert(AutoReset.Due(s, expiry) is null); Assert(AutoReset.Due(s with { FetchedAt = now.AddMinutes(-2) }, now) is null); Assert(AutoReset.Due(s with { Credits = new(1, [Credit(null)]) }, now) is null); });
-Check("automatic reset journal reuses key after restart and blocks simultaneous credits", () => { var expiry = now.AddMinutes(5); var s = Snap() with { Credits = new(2, [Credit(expiry.ToUnixTimeSeconds()), new("other", "codexRateLimits", "available", null, expiry.ToUnixTimeSeconds(), null, null)]) }; var journal = new AutoResetJournal(); var a = AutoReset.Prepare(journal, s, now)!; var restored = JsonSerializer.Deserialize<AutoResetJournal>(JsonSerializer.Serialize(journal, Json.Options), Json.Options)!; Assert(AutoReset.Prepare(restored, s, now.AddSeconds(1))!.IdempotencyKey == a.IdempotencyKey); restored.Attempts[0] = a with { Outcome = "reset" }; var next = s with { Credits = new(1, [s.Credits!.Credits![1]]) }; Assert(AutoReset.Prepare(restored, next, now.AddSeconds(1)) is null); restored.Attempts[0] = a; var later = next with { FetchedAt = now.AddMinutes(6), Credits = new(1, [Credit(now.AddMinutes(10).ToUnixTimeSeconds()) with { Id = "new" }]) }; Assert(AutoReset.Prepare(restored, later, now.AddMinutes(6)) is null); Assert(!AutoReset.IsEligible(s, "other-account", a.CreditId, a.Expiry, now)); Assert(!AutoReset.IsEligible(s, s.AccountKey, a.CreditId, a.Expiry.AddSeconds(1), now)); });
+Check("automatic reset journal reuses key after restart and blocks simultaneous credits", () => { var expiry = now.AddMinutes(5); var s = Snap() with { Credits = new(2, [Credit(expiry.ToUnixTimeSeconds()), new("other", "codexRateLimits", "available", null, expiry.ToUnixTimeSeconds(), null, null)]) }; var journal = new AutoResetJournal(); var a = AutoReset.Prepare(journal, s, now)!; var restored = JsonSerializer.Deserialize<AutoResetJournal>(JsonSerializer.Serialize(journal, Json.Options), Json.Options)!; Assert(AutoReset.Prepare(restored, s, now.AddSeconds(1))!.IdempotencyKey == a.IdempotencyKey); restored.Attempts[0] = a with { Outcome = "reset" }; var next = s with { Credits = new(1, [s.Credits!.Credits![1]]) }; Assert(AutoReset.Prepare(restored, next, now.AddSeconds(1)) is null); restored.Attempts[0] = a; var later = next with { FetchedAt = now.AddMinutes(6), Credits = new(1, [Credit(now.AddMinutes(10).ToUnixTimeSeconds()) with { Id = "new" }]) }; Assert(AutoReset.Prepare(restored, later, now.AddMinutes(6)) is null); Assert(!AutoReset.IsEligible(s, "other-account", a.CreditId, a.Expiry, now)); Assert(!AutoReset.IsEligible(s, s.AccountKey, a.CreditId, a.Expiry!.Value.AddSeconds(1), now)); });
 Check("clock rollback cannot trigger another automatic reset", () => { var s = Snap() with { Credits = new(1, [Credit(now.AddMinutes(4).ToUnixTimeSeconds())]) }; var journal = new AutoResetJournal { Attempts = [new("a", "previous", now.AddMinutes(10), Guid.NewGuid().ToString(), now.AddMinutes(1), "reset")] }; Assert(AutoReset.Prepare(journal, s, now) is null); });
 Check("automatic reset defaults off", () => Assert(!new Settings().AutoResetEnabled));
+Check("manual reset can select any identified future or undated credit without automatic authorization", () => {
+    var near = Credit(now.AddMinutes(4).ToUnixTimeSeconds()); var far = Credit(now.AddDays(30).ToUnixTimeSeconds()) with { Id = "far" }; var undated = Credit(null) with { Id = "undated" };
+    var s = Snap() with { Credits = new(3, [near, far, undated]) };
+    Assert(!new Settings().AutoResetEnabled && AutoReset.Due(s, now)?.Id == near.Id);
+    Assert(ManualReset.Eligible(s, "a", far.Id, far.Expiry, now) == far);
+    Assert(ManualReset.Eligible(s, "a", undated.Id, null, now) == undated);
+    Assert(ManualReset.Prepare(new(), s, "a", far.Id, far.Expiry, now)?.Manual == true);
+});
+Check("manual reset rejects stale account, ambiguous IDs, invalid expiry and changed selection", () => {
+    var c = Credit(now.AddDays(8).ToUnixTimeSeconds()); var s = Snap() with { Credits = new(1, [c]) };
+    Assert(ManualReset.Eligible(s, "other", c.Id, c.Expiry, now) is null);
+    Assert(ManualReset.Eligible(s, "a", "other-id", c.Expiry, now) is null);
+    Assert(ManualReset.Eligible(s, "a", c.Id, c.Expiry!.Value.AddSeconds(1), now) is null);
+    Assert(ManualReset.Eligible(s, "a", c.Id, null, now) is null);
+    Assert(ManualReset.Eligible(s with { FetchedAt = now.AddSeconds(1) }, "a", c.Id, c.Expiry, now) is null);
+    Assert(ManualReset.Eligible(s with { FetchedAt = now.AddSeconds(-61) }, "a", c.Id, c.Expiry, now) is null);
+    Assert(ManualReset.Eligible(s with { Credits = new(2, [c, c]) }, "a", c.Id, c.Expiry, now) is null);
+    foreach (var invalid in new[] { Credit(now.ToUnixTimeSeconds()), Credit(double.MaxValue), Credit(null) with { Id = "" }, c with { Status = "used" }, c with { ResetType = "other" } })
+        Assert(ManualReset.Eligible(s with { Credits = new(1, [invalid]) }, "a", invalid.Id, invalid.Expiry, now) is null);
+});
+Check("manual unknown retries preserve key after restart and block other credits", () => {
+    var c = Credit(now.AddDays(8).ToUnixTimeSeconds()); var other = c with { Id = "other" }; var s = Snap() with { Credits = new(2, [c, other]) };
+    var j = new AutoResetJournal(); var first = ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now)!;
+    j = JsonSerializer.Deserialize<AutoResetJournal>(JsonSerializer.Serialize(j, Json.Options), Json.Options)!;
+    Assert(ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now.AddSeconds(1))!.IdempotencyKey == first.IdempotencyKey);
+    Assert(ManualReset.Prepare(j, s, "a", other.Id, other.Expiry, now.AddSeconds(1)) is null);
+    Assert(ManualReset.Prepare(j, s with { AccountKey = "b" }, "b", other.Id, other.Expiry, now.AddSeconds(1)) is not null);
+});
+Check("manual retries of automatic unknowns keep the original key; automatic cannot resume manual unknowns", () => {
+    var c = Credit(now.AddMinutes(4).ToUnixTimeSeconds()); var s = Snap() with { Credits = new(1, [c]) }; var j = new AutoResetJournal();
+    var automatic = AutoReset.Prepare(j, s, now)!;
+    Assert(ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now.AddSeconds(1))!.IdempotencyKey == automatic.IdempotencyKey);
+    j = new(); Assert(ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now) is not null); Assert(AutoReset.Prepare(j, s, now) is null);
+});
+Check("confirmed no-op permits a newly confirmed manual request; terminal outcomes never replay", () => {
+    foreach (var outcome in new[] { "nothingToReset", "noCredit", "reset", "alreadyRedeemed", "manuallyReviewed" }) {
+        var c = Credit(now.AddDays(8).ToUnixTimeSeconds()); var s = Snap() with { Credits = new(1, [c]) }; var j = new AutoResetJournal();
+        var a = ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now)!; j.Attempts[0] = a with { Outcome = outcome };
+        Assert(ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now) is null);
+        var next = ManualReset.Prepare(j, s with { FetchedAt = now.AddSeconds(1) }, "a", c.Id, c.Expiry, now.AddSeconds(1));
+        if (outcome is "nothingToReset" or "noCredit") { Assert(next is not null && next.IdempotencyKey != a.IdempotencyKey); j.Attempts[^1] = next! with { Outcome = "reset" }; Assert(ManualReset.Prepare(j, s with { FetchedAt = now.AddSeconds(2) }, "a", c.Id, c.Expiry, now.AddSeconds(2)) is null); }
+        else Assert(next is null);
+    }
+});
+Check("manual and automatic share cooldown across credits and resist clock rollback", () => {
+    var c = Credit(now.AddDays(8).ToUnixTimeSeconds()); var other = c with { Id = "other" }; var s = Snap() with { Credits = new(2, [c, other]) }; var j = new AutoResetJournal();
+    var a = ManualReset.Prepare(j, s, "a", c.Id, c.Expiry, now)!; j.Attempts[0] = a with { Outcome = "reset" };
+    Assert(ManualReset.Prepare(j, s with { FetchedAt = now.AddMinutes(-1) }, "a", other.Id, other.Expiry, now.AddMinutes(-1)) is null);
+    Assert(ManualReset.Prepare(j, s with { FetchedAt = now.AddMinutes(4) }, "a", other.Id, other.Expiry, now.AddMinutes(4)) is null);
+    Assert(ManualReset.Prepare(j, s with { FetchedAt = now.AddMinutes(5) }, "a", other.Id, other.Expiry, now.AddMinutes(5)) is not null);
+});
 Check("per-account history isolation", () => { var h = new ProviderHistory(); h.Ingest(Snap()); h.Ingest(Snap(used: 40)); Near(h.Budgets.Values.Single().Consumed, 10); h.Ingest(Snap("b", 40)); Near(h.Budgets.Values.Single().Consumed, 0); });
 Check("provider selection is independent", () => { var h = new History(); h.For("codex").Ingest(Snap()); h.For("claude").Ingest(Snap("claude")); h.For("claude").SelectedId = "fable"; Assert(h.For("codex").SelectedId == "codex/primary"); });
 Check("budget serialization preserves negative balance", () => { var h = new ProviderHistory(); h.Ingest(Snap()); h.Ingest(Snap(used: 47)); var copy = JsonSerializer.Deserialize<ProviderHistory>(JsonSerializer.Serialize(h, Json.Options), Json.Options)!; Near(copy.Budgets.Values.Single().LeftToday, -7); });
@@ -87,6 +138,41 @@ await AsyncCheck("automatic redemption sends exact ID and idempotency key to fak
 await AsyncCheck("automatic redemption rejects changed account without sending", async () => { var expiry = DateTimeOffset.UtcNow.AddMinutes(4).ToUnixTimeSeconds(); var start = FakeStart("consume"); start.Environment["FAKE_EXPIRY"] = expiry.ToString(); try { await CodexClient.Consume(start, TimeSpan.FromSeconds(10), new("different-account", "fake-credit", DateTimeOffset.FromUnixTimeSeconds(expiry), "test-key")); throw new Exception("Accepted wrong account"); } catch (PaceException) { } });
 await AsyncCheck("automatic reset lock excludes another process", async () => { var root = Path.Combine(Path.GetTempPath(), "AgentPaceLockTest-" + Guid.NewGuid()); try { foreach (var auth in new[] { false, true }) using (var lease = auth ? new Storage(root).AcquireAutoResetAuthorizationLock() : new Storage(root).AcquireAutoResetLock()) { var start = new ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false }; if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet") start.ArgumentList.Add(typeof(UsageWindow).Assembly.Location.Replace("AgentPace.Core.dll", "AgentPace.Checks.dll")); start.ArgumentList.Add("--fake-lock"); start.Environment["FAKE_LOCK_ROOT"] = root; if (auth) start.Environment["FAKE_AUTH_LOCK"] = "1"; using var child = Process.Start(start)!; await child.WaitForExitAsync(); Assert(child.ExitCode == 7, "Concurrent process acquired the operation lock"); } } finally { if (Directory.Exists(root)) Directory.Delete(root, true); } });
 await AsyncCheck("automatic redemption honors revocation before sending", async () => { var expiry = DateTimeOffset.UtcNow.AddMinutes(4).ToUnixTimeSeconds(); var start = FakeStart("consume"); start.Environment["FAKE_EXPIRY"] = expiry.ToString(); var account = UsageParser.Hash(JsonSerializer.Serialize(new { identity = "test@example.com", workspace = (JsonElement?)null })); try { await CodexClient.Consume(start, TimeSpan.FromSeconds(10), new(account, "fake-credit", DateTimeOffset.FromUnixTimeSeconds(expiry), "test-key", () => false)); throw new Exception("Accepted disabled authorization"); } catch (PaceException) { } });
+await AsyncCheck("manual protocol redeems the selected far-future or undated credit with automatic mode off", async () => {
+    var account = UsageParser.Hash(JsonSerializer.Serialize(new { identity = "test@example.com", workspace = (JsonElement?)null }));
+    foreach (var expiry in new DateTimeOffset?[] { DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds()), null }) {
+        var start = FakeStart("consume"); start.Environment["FAKE_EXPIRY"] = expiry?.ToUnixTimeSeconds().ToString() ?? "null";
+        var sending = false; var result = await CodexClient.Consume(start, TimeSpan.FromSeconds(10), new(account, "fake-credit", expiry, "test-key", Manual: true, OnSending: () => sending = true));
+        Assert(result.Outcome == "reset" && sending);
+    }
+});
+await AsyncCheck("manual protocol validates selected credit and cancellation immediately before sending", async () => {
+    var account = UsageParser.Hash(JsonSerializer.Serialize(new { identity = "test@example.com", workspace = (JsonElement?)null }));
+    var expiry = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds());
+    foreach (var scenario in new[] { "account", "id", "expiry", "duplicate", "status", "type", "cancel", "invalid-expiry", "empty-key" }) {
+        var start = FakeStart("consume"); start.Environment["FAKE_EXPIRY"] = scenario == "invalid-expiry" ? "1e100" : expiry.ToUnixTimeSeconds().ToString();
+        if (scenario == "duplicate") start.Environment["FAKE_DUPLICATE"] = "1";
+        if (scenario == "status") start.Environment["FAKE_STATUS"] = "redeemed";
+        if (scenario == "type") start.Environment["FAKE_TYPE"] = "other";
+        var sending = false;
+        var request = new ConsumeRequest(scenario == "account" ? "other-account" : account, scenario == "id" ? "other-credit" : "fake-credit", scenario == "expiry" ? expiry.AddSeconds(1) : scenario == "invalid-expiry" ? null : expiry, scenario == "empty-key" ? "" : "test-key", () => scenario != "cancel", Manual: true, OnSending: () => sending = true);
+        try { await CodexClient.Consume(start, TimeSpan.FromSeconds(10), request); throw new Exception("Accepted " + scenario); } catch (PaceException) { }
+        Assert(!sending, "Sent despite " + scenario);
+    }
+});
+await AsyncCheck("manual protocol preserves server outcomes and never turns a disconnected result into success", async () => {
+    var account = UsageParser.Hash(JsonSerializer.Serialize(new { identity = "test@example.com", workspace = (JsonElement?)null }));
+    var expiry = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds());
+    foreach (var outcome in new[] { "reset", "nothingToReset", "noCredit", "alreadyRedeemed", "disconnect", "unexpected" }) {
+        var start = FakeStart("consume"); start.Environment["FAKE_EXPIRY"] = expiry.ToUnixTimeSeconds().ToString(); start.Environment["FAKE_OUTCOME"] = outcome;
+        var sending = false;
+        try {
+            var result = await CodexClient.Consume(start, TimeSpan.FromSeconds(10), new(account, "fake-credit", expiry, "test-key", Manual: true, OnSending: () => sending = true));
+            Assert(outcome is not ("disconnect" or "unexpected") && result.Outcome == outcome);
+        } catch (PaceException) { Assert(outcome is "disconnect" or "unexpected"); }
+        Assert(sending);
+    }
+});
 Check("automatic reset revocation is durable", () => { var root = Path.Combine(Path.GetTempPath(), "AgentPaceRevocation-" + Guid.NewGuid()); try { var storage = new Storage(root); storage.RevokeAutoReset(); Assert(new Storage(root).AutoResetRevoked); storage.ClearAutoResetRevocation(); Assert(!new Storage(root).AutoResetRevoked); } finally { if (Directory.Exists(root)) Directory.Delete(root, true); } });
 Console.WriteLine($"{passed}/{passed + failed} checks passed");
 Environment.ExitCode = failed > 0 ? 1 : 0;
@@ -119,12 +205,18 @@ async Task Fake()
         else if (method == "account/read")
             Console.WriteLine("{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"test@example.com\"}}}");
         else if (method == "account/rateLimits/read")
-            Console.WriteLine(mode == "consume" ? JsonSerializer.Serialize(new { id = 3, result = new { rateLimits = new { primary = new { usedPercent = 30, windowDurationMins = 10080, resetsAt = 1999999999 } }, rateLimitResetCredits = new { availableCount = 1, credits = new[] { new { id = "fake-credit", resetType = "codexRateLimits", status = "available", expiresAt = long.Parse(Environment.GetEnvironmentVariable("FAKE_EXPIRY")!) } } } } }) : "{\"id\":3,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":30,\"windowDurationMins\":10080,\"resetsAt\":1999999999}}}}");
+        {
+            var expiry = Environment.GetEnvironmentVariable("FAKE_EXPIRY");
+            var c = new { id = "fake-credit", resetType = Environment.GetEnvironmentVariable("FAKE_TYPE") ?? "codexRateLimits", status = Environment.GetEnvironmentVariable("FAKE_STATUS") ?? "available", expiresAt = expiry is null or "null" ? (double?)null : double.Parse(expiry, System.Globalization.CultureInfo.InvariantCulture) };
+            Console.WriteLine(mode == "consume" ? JsonSerializer.Serialize(new { id = 3, result = new { rateLimits = new { primary = new { usedPercent = 30, windowDurationMins = 10080, resetsAt = 1999999999 } }, rateLimitResetCredits = new { availableCount = 1, credits = Environment.GetEnvironmentVariable("FAKE_DUPLICATE") == "1" ? new[] { c, c } : [c] } } }) : "{\"id\":3,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":30,\"windowDurationMins\":10080,\"resetsAt\":1999999999}}}}");
+        }
         else if (method == "account/rateLimitResetCredit/consume")
         {
             var p = m.Get("params");
             if (mode != "consume" || p?.Str("creditId") != "fake-credit" || p?.Str("idempotencyKey") != "test-key") Environment.Exit(6);
-            Console.WriteLine("{\"id\":4,\"result\":{\"outcome\":\"reset\"}}");
+            var outcome = Environment.GetEnvironmentVariable("FAKE_OUTCOME") ?? "reset";
+            if (outcome == "disconnect") return;
+            Console.WriteLine(JsonSerializer.Serialize(new { id = 4, result = new { outcome } }));
             return;
         }
         else if (method == "account/usage/read")

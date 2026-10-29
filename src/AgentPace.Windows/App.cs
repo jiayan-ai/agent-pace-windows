@@ -174,7 +174,9 @@ public sealed class App : Application
                 var content = TextContent(details);
                 var heading = language == "en" ? "Suggested hourly allowance" : "接下来每小时建议可用";
                 var expires = language == "en" ? "Reset credit expires in" : "Reset 券到期倒计时";
-                if (!content.Contains(heading) || !content.Contains(expires) || !store.Summary.EndsWith("/h"))
+                var redeem = language == "en" ? "Use reset now" : "立即使用 Reset";
+                var demoGuard = language == "en" ? "Demo mode cannot redeem credits." : "演示模式不使用真实券。";
+                if (!content.Contains(heading) || !content.Contains(expires) || !content.Contains(redeem) || !content.Contains(demoGuard) || !store.Summary.EndsWith("/h"))
                     throw new InvalidOperationException("Credit pace rendering missing: " + language);
             }
             store.Current.Ingest(codex with { Credits = new(1, [new("demo", "codexRateLimits", "available", null, store.Now.AddSeconds(-1).ToUnixTimeSeconds(), null, null)]) });
@@ -194,7 +196,7 @@ public sealed class App : Application
                 details.Hide();
             }
             await WebViewSmoke.Run();
-            File.WriteAllText(Path.Combine(output, "result.txt"), "PASS WPF localized Codex/Claude and credit pace rendering, three tray open/hide cycles, and WebView2 isolated quota bridge; synthetic data only. Real account sign-in and physical DPI/wake behavior require device testing.");
+            File.WriteAllText(Path.Combine(output, "result.txt"), "PASS WPF localized Codex/Claude, credit pace and guarded manual reset rendering, three tray open/hide cycles, and WebView2 isolated quota bridge; synthetic data only. Real account sign-in and physical DPI/wake behavior require device testing.");
             ExitApp(0);
         }
         catch (Exception ex) { var output = Environment.GetEnvironmentVariable("AGENT_PACE_SMOKE_OUTPUT") ?? Path.GetTempPath(); Directory.CreateDirectory(output); File.WriteAllText(Path.Combine(output, "failure.txt"), ex.ToString()); ExitApp(1); }

@@ -56,7 +56,11 @@ public sealed class Storage(string root)
         Directory.CreateDirectory(Root);
         var path = Path.Combine(Root, name);
         var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(data, Json.Options));
+        using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(file, data, Json.Options);
+            file.Flush(flushToDisk: true);
+        }
         File.Move(temporary, path, true);
     }
 }

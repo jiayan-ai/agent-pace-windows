@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace AgentPace.Core;
 
 public sealed record CodexOptions(string? Executable = null, string? WslDistribution = null);
-public sealed record ConsumeRequest(string AccountKey, string CreditId, DateTimeOffset Expiry, string IdempotencyKey, Func<bool>? StillEnabled = null, Func<IDisposable>? AcquireAuthorization = null);
+public sealed record ConsumeRequest(string AccountKey, string CreditId, DateTimeOffset? Expiry, string IdempotencyKey, Func<bool>? StillEnabled = null, Func<IDisposable>? AcquireAuthorization = null, bool Manual = false, Action? OnSending = null);
 public sealed record CodexResult(Snapshot Snapshot, string? Outcome);
 public static class CodexClient
 {
@@ -203,8 +203,12 @@ public static class CodexClient
                             {
                                 using var authorization = consume.AcquireAuthorization?.Invoke();
                                 var now = DateTimeOffset.UtcNow;
-                                if (consume.StillEnabled?.Invoke() == false || !AutoReset.IsEligible(quota, consume.AccountKey, consume.CreditId, consume.Expiry, now))
+                                var eligible = consume.Manual
+                                    ? ManualReset.Eligible(quota, consume.AccountKey, consume.CreditId, consume.Expiry, now) is not null
+                                    : AutoReset.IsEligible(quota, consume.AccountKey, consume.CreditId, consume.Expiry, now);
+                                if (consume.StillEnabled?.Invoke() == false || !eligible || string.IsNullOrWhiteSpace(consume.IdempotencyKey))
                                     throw new PaceException("Reset 券或账户状态已变化，请刷新后确认。", "Reset credit or account changed. Refresh to confirm.");
+                                consume.OnSending?.Invoke();
                                 await Send(new { id = 4, method = "account/rateLimitResetCredit/consume", @params = new { idempotencyKey = consume.IdempotencyKey, creditId = consume.CreditId } });
                                 break;
                             }

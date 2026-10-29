@@ -33,8 +33,11 @@ public sealed class Store : IDisposable
     bool autoJournalValid = true, autoBusy;
     DateTimeOffset autoLastAttempt = DateTimeOffset.MinValue;
     string autoResetStatus = "";
-    public bool HasPendingAutoReset => autoJournal.Attempts.Any(a => a.AccountKey == Settings.AutoResetAccountKey && a.Outcome is null);
-    public string AutoResetStatus { get => !autoJournalValid ? L.T("操作记录无法读取或保存，自动使用已暂停。", "Operation journal unavailable; automatic redemption paused.") : HasPendingAutoReset && !autoBusy ? L.T("上次操作结果未确认。请先在 Codex 核对，再到设置中解除暂停。", "Previous result is unconfirmed. Check Codex, then resolve it in Settings.") : autoResetStatus; private set => autoResetStatus = value; }
+    string? CurrentResetAccount => History.For("codex").Snapshot?.AccountKey;
+    public bool HasPendingAutoReset => autoJournal.Attempts.Any(a => a.AccountKey == CurrentResetAccount && a.Outcome is null);
+    public bool ResetBusy => autoBusy;
+    public bool IsPendingReset(string account, string creditId) => autoJournal.Attempts.Any(a => a.AccountKey == account && a.CreditId == creditId && a.Outcome is null);
+    public string AutoResetStatus { get => !autoJournalValid ? L.T("操作记录无法读取或保存，Reset 使用已暂停。", "Operation journal unavailable; redemption paused.") : HasPendingAutoReset && !autoBusy ? L.T("上次操作结果未确认。可重试同一张券；使用其他券前，请先在 Codex 核对并解除暂停。", "Previous result is unconfirmed. You may retry the same credit; check Codex and resolve it before using another.") : autoResetStatus; private set => autoResetStatus = value; }
     readonly HashSet<string> busy = [], verified = [];
     readonly Dictionary<string, DateTimeOffset> next = [], attempted = [];
     readonly CancellationTokenSource lifetime = new();
@@ -147,12 +150,12 @@ public sealed class Store : IDisposable
         if (Settings.RadarEnabled && (force || Now >= radarNext))
             await RefreshRadar();
     }
-    public async Task Refresh(string? provider = null)
+    public async Task Refresh(string? provider = null, bool resetOwned = false)
     {
         provider ??= Provider;
         if (demo)
             return;
-        if (busy.Contains(provider) || provider == "claude" && (!Settings.ClaudeEnabled || errors.GetValueOrDefault(provider)?.NeedsLogin == true))
+        if (busy.Contains(provider) || provider == "codex" && autoBusy && !resetOwned || provider == "claude" && (!Settings.ClaudeEnabled || errors.GetValueOrDefault(provider)?.NeedsLogin == true))
             return;
         if (errors.GetValueOrDefault(provider)?.RetrySeconds > 0 && next.GetValueOrDefault(provider) > DateTimeOffset.Now)
             return;
@@ -209,9 +212,11 @@ public sealed class Store : IDisposable
         catch { Settings.AutoResetEnabled = oldEnabled; Settings.AutoResetAccountKey = oldAccount; AutoResetStatus = L.T("无法保存设置或另一个实例正在处理；请重试。", "Could not save the setting or another instance is processing; retry."); }
         Notify();
     }
-    public void ResolvePendingAutoReset()
+    public void ResolvePendingAutoReset(string account)
     {
         if (autoBusy) return;
+        if (string.IsNullOrWhiteSpace(account) || CurrentResetAccount != account)
+        { AutoResetStatus = L.T("账户已变化，请重新核对当前账户的 Reset 结果。", "The account changed. Review the current account's reset result first."); Notify(); return; }
         try
         {
             using var heldLock = Storage.AcquireAutoResetLock();
@@ -220,7 +225,7 @@ public sealed class Store : IDisposable
             for (var i = 0; i < journal.Attempts.Count; i++)
             {
                 var a = journal.Attempts[i];
-                if (a.AccountKey == Settings.AutoResetAccountKey && a.Outcome is null)
+                if (a.AccountKey == account && a.Outcome is null)
                     journal.Attempts[i] = a with { Outcome = "manuallyReviewed" };
             }
             Storage.Write("auto-reset-journal.json", journal);
@@ -230,6 +235,104 @@ public sealed class Store : IDisposable
         catch { AutoResetStatus = L.T("无法保存核对结果，仍处于暂停状态。", "Could not save review; automatic redemption remains paused."); }
         Notify();
     }
+
+    public string? ManualResetUnavailable(string account, ResetCredit credit)
+    {
+        if (demo) return L.T("演示模式不使用真实券。", "Demo mode cannot redeem credits.");
+        if (autoBusy || busy.Contains("codex")) return L.T("正在处理，请稍候。", "An operation is in progress; please wait.");
+        if (!autoJournalValid) return L.T("操作记录不可用，暂时无法使用。", "Operation journal unavailable; redemption paused.");
+        var snapshot = History.For("codex").Snapshot;
+        var now = DateTimeOffset.UtcNow;
+        if (!verified.Contains("codex") || errors.ContainsKey("codex") || snapshot is null || snapshot.FetchedAt > now || now - snapshot.FetchedAt > TimeSpan.FromMinutes(10))
+            return L.T("请先刷新 Codex 额度。", "Refresh Codex usage first.");
+        if (ManualReset.Available(snapshot, account, credit.Id, credit.Expiry, now) is null)
+            return L.T("这张券的状态、编号或有效期无法确认，请刷新。", "This credit's status, ID or expiry is unconfirmed. Refresh first.");
+        var existing = autoJournal.Attempts.LastOrDefault(a => a.AccountKey == account && a.CreditId == credit.Id);
+        if (existing is { Outcome: null }) return existing.Expiry == credit.Expiry ? null : L.T("有效期已变化，请先核对上次操作。", "Expiry changed; review the previous operation first.");
+        if (existing is not null && existing.Outcome is not ("nothingToReset" or "noCredit"))
+            return L.T("这张券已处理，不会再次提交。", "This credit was already handled and will not be resubmitted.");
+        if (autoJournal.Attempts.Any(a => a.AccountKey == account && a.Outcome is null))
+            return L.T("请先核对上次 Reset 的结果。", "Resolve the previous reset first.");
+        if (autoJournal.Attempts.Any(a => a.AccountKey == account && (a.StartedAt > now || a.CreditId != credit.Id && now - a.StartedAt < TimeSpan.FromMinutes(5))))
+            return L.T("刚刚处理过另一张券，请间隔 5 分钟再试。", "Another credit was just handled; wait 5 minutes before using another.");
+        return null;
+    }
+
+    // Confirmation captures an exact account, credit and expiry. The fresh read
+    // below and the final app-server read must both match that captured choice.
+    public async Task RedeemReset(string account, ResetCredit credit)
+    {
+        if (ManualResetUnavailable(account, credit) is { } reason) { AutoResetStatus = reason; Notify(); return; }
+        autoBusy = true;
+        autoLastAttempt = DateTimeOffset.UtcNow;
+        AutoResetStatus = L.T("正在核对账户与所选 Reset 券…", "Checking the account and selected reset credit…");
+        Notify();
+        AutoResetAttempt? attempt = null;
+        var newlyPrepared = false;
+        var mayHaveSent = false;
+        try
+        {
+            using var heldLock = Storage.AcquireAutoResetLock();
+            try
+            {
+                autoJournal = Storage.Read<AutoResetJournal>("auto-reset-journal.json");
+                if (autoJournal.Attempts is null || autoJournal.Attempts.Any(a => a is null || string.IsNullOrWhiteSpace(a.IdempotencyKey))) throw new InvalidDataException();
+            }
+            catch { autoJournalValid = false; AutoResetStatus = L.T("无法读取操作记录，未发送使用请求。", "Cannot read operation journal; no redemption request was sent."); return; }
+            var requestedAt = DateTimeOffset.UtcNow;
+            await Refresh("codex", resetOwned: true);
+            var snapshot = History.For("codex").Snapshot;
+            if (!verified.Contains("codex") || errors.ContainsKey("codex") || snapshot is null || snapshot.FetchedAt < requestedAt ||
+                ManualReset.Eligible(snapshot, account, credit.Id, credit.Expiry, DateTimeOffset.UtcNow) is null)
+            { AutoResetStatus = L.T("同步失败，或账户、券状态已变化；未使用，请刷新后重新选择。", "Sync failed or the account/credit changed. No redemption was sent; refresh and choose again."); return; }
+            var previous = autoJournal.Attempts.ToArray();
+            attempt = ManualReset.Prepare(autoJournal, snapshot, account, credit.Id, credit.Expiry, DateTimeOffset.UtcNow);
+            if (attempt is null) { AutoResetStatus = L.T("这张券已处理、其他操作待确认，或仍在 5 分钟保护间隔内。", "This credit was handled, another result is pending, or the 5-minute protection interval is active."); return; }
+            newlyPrepared = !previous.Contains(attempt);
+            try { Storage.Write("auto-reset-journal.json", autoJournal); }
+            catch { autoJournalValid = false; AutoResetStatus = L.T("无法保存操作记录，未发送使用请求。", "Cannot save operation journal; no redemption request was sent."); return; }
+            AutoResetStatus = L.T("正在使用所选 Reset 券…", "Redeeming the selected reset credit…"); Notify();
+            var request = new ConsumeRequest(account, credit.Id, credit.Expiry, attempt.IdempotencyKey,
+                () => !lifetime.IsCancellationRequested && CurrentResetAccount == account,
+                () => Storage.AcquireAutoResetAuthorizationLock(), Manual: true, OnSending: () => mayHaveSent = true);
+            CodexResult result;
+            try { result = await CodexClient.Consume(new(Settings.CodexExecutable, Settings.WslDistribution), request, lifetime.Token); }
+            catch
+            {
+                // If the process failed before its final send, a new attempt can
+                // be discarded safely. An older uncertain operation stays pending.
+                if (!mayHaveSent && newlyPrepared)
+                {
+                    autoJournal.Attempts.Remove(attempt);
+                    try { Storage.Write("auto-reset-journal.json", autoJournal); }
+                    catch { autoJournalValid = false; }
+                }
+                AutoResetStatus = mayHaveSent || !newlyPrepared
+                    ? L.T("使用结果未确认。请在 Codex 核对，或重试同一张券；不会自动换券。", "Redemption result is unconfirmed. Check Codex or retry the same credit; another credit will not be substituted.")
+                    : L.T("发送前核验失败，未使用 Reset；请刷新后重试。", "Verification failed before sending. No reset was used; refresh and retry.");
+                await Refresh("codex", resetOwned: true);
+                return;
+            }
+            var index = autoJournal.Attempts.IndexOf(attempt);
+            if (index >= 0) autoJournal.Attempts[index] = attempt with { Outcome = result.Outcome };
+            try { Storage.Write("auto-reset-journal.json", autoJournal); }
+            catch { autoJournalValid = false; AutoResetStatus = L.T("结果无法保存，请在 Codex 核对；Reset 使用已暂停。", "Could not save the result. Check Codex; further redemption is paused."); return; }
+            AutoResetStatus = result.Outcome switch
+            {
+                "reset" => L.T("Reset 券已使用，额度已请求刷新。", "Reset credit used; quota refresh requested."),
+                "alreadyRedeemed" => L.T("这张 Reset 券此前已使用，正在刷新额度。", "This reset credit was already redeemed. Refreshing quota."),
+                "nothingToReset" => L.T("未使用：当前没有可重置的额度。之后有用量时可再点击。", "Not used: there is nothing to reset. You can try again after using quota."),
+                "noCredit" => L.T("未使用：服务端没有可用的这张券，已请求刷新。", "Not used: the server reports no available credit. Refresh requested."),
+                _ => L.T("结果未确认，请在 Codex 核对。", "Result unconfirmed. Check Codex.")
+            };
+            await Refresh("codex", resetOwned: true);
+            if (errors.ContainsKey("codex")) AutoResetStatus += L.T(" 额度刷新失败，请稍后刷新查看。", " Quota refresh failed; refresh again later.");
+        }
+        catch { AutoResetStatus = mayHaveSent
+            ? L.T("使用结果未确认，请在 Codex 核对后再继续。", "Redemption result is unconfirmed. Check Codex before continuing.")
+            : L.T("无法锁定操作记录或完成核验，未发送使用请求。", "Could not lock the operation journal or finish verification; no redemption request was sent."); }
+        finally { autoBusy = false; Now = DateTimeOffset.Now; Notify(); }
+    }
     bool AutoResetStillEnabled(string account)
     {
         if (!Settings.AutoResetEnabled || Settings.AutoResetAccountKey != account || Storage.AutoResetRevoked) return false;
@@ -238,7 +341,7 @@ public sealed class Store : IDisposable
     }
     async Task AutoResetTick()
     {
-        if (!Settings.AutoResetEnabled || Storage.AutoResetRevoked || autoBusy || !autoJournalValid || DateTimeOffset.UtcNow - autoLastAttempt < TimeSpan.FromMinutes(1)) return;
+        if (!Settings.AutoResetEnabled || Storage.AutoResetRevoked || autoBusy || busy.Contains("codex") || !autoJournalValid || DateTimeOffset.UtcNow - autoLastAttempt < TimeSpan.FromMinutes(1)) return;
         var cached = History.For("codex").Snapshot;
         var now = DateTimeOffset.UtcNow;
         if (cached is null) { AutoResetStatus = L.T("等待同步 Codex 账户。", "Waiting for Codex account sync."); Notify(); return; }
@@ -258,7 +361,7 @@ public sealed class Store : IDisposable
             try { var loaded = Storage.Read<AutoResetJournal>("auto-reset-journal.json"); if (loaded.Attempts is null || loaded.Attempts.Any(a => a is null || string.IsNullOrWhiteSpace(a.IdempotencyKey))) throw new InvalidDataException(); autoJournal = loaded; }
             catch { autoJournalValid = false; AutoResetStatus = L.T("无法读取操作记录，自动使用已暂停。", "Cannot read operation journal; automatic redemption paused."); return; }
             AutoResetStatus = L.T("正在确认账户与临期券…", "Checking account and expiring credit…"); Notify();
-            await Refresh("codex");
+            await Refresh("codex", resetOwned: true);
             var snapshot = History.For("codex").Snapshot;
             if (!AutoResetStillEnabled(cached.AccountKey)) return;
             if (snapshot is not null && snapshot.AccountKey != cached.AccountKey)
@@ -284,7 +387,7 @@ public sealed class Store : IDisposable
                 "noCredit" => L.T("未使用：账户没有可用 Reset 券。", "Not used: no reset credit is available."),
                 _ => L.T("结果未知，请在 Codex 确认。", "Result unknown. Check Codex.")
             };
-            await Refresh("codex");
+            await Refresh("codex", resetOwned: true);
         }
         catch (OperationCanceledException) { }
         catch { AutoResetStatus = L.T("结果未确认：请检查登录与网络；若仍在有效期内会使用同一操作编号重试。", "Result unconfirmed. Check sign-in and network; retries use the same operation key while the credit remains valid."); }

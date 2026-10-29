@@ -27,6 +27,7 @@ The tray uses a quota progress icon and a hover summary. Click it for details. W
 - Claude five-hour rolling hourly allowance with a highlighted reset countdown. The final partial hour shows actual remaining quota; expiration waits for a fresh server response.
 - Fable, Sonnet and Opus weekly windows when the account reports them. Fable is identified by an explicit model-scoped weekly limit, not an internal codename.
 - Codex reset credit counts, expiry details and local rule-based advice using 30 days of account activity.
+- Use a specific Codex reset credit directly in the app, with confirmation before it is spent.
 - Tibo public reset records, verified source links and a separate community forecast browser.
 - Immediate English / Simplified Chinese switch; saved language and quota choices.
 - Five-minute quota sync, wake refresh, fifteen-second countdown updates, optional launch at Windows sign-in, single-instance activation and a tray context menu.
@@ -38,7 +39,7 @@ Sign in to a subscription account with a Windows Codex CLI installation. Agent P
 
 Auto-discovery of every Microsoft Store / desktop-app package layout is not guaranteed. Choose the bundled `codex.exe` explicitly when needed. This app never reads `auth.json`, passwords or authentication tokens. API-key-only accounts do not provide subscription quota.
 
-The client launches a local subprocess and uses `initialize`, `account/read`, `account/rateLimits/read` and optional `account/usage/read`. When automatic redemption is enabled, it also calls `account/rateLimitResetCredit/consume`, a write operation that can spend a reset credit. It rejects unsolicited server requests and never starts model work. Missing history in older servers does not prevent quota sync.
+The client launches a local subprocess and uses `initialize`, `account/read`, `account/rateLimits/read` and optional `account/usage/read`. When you confirm manual redemption or enable automatic redemption, it also calls `account/rateLimitResetCredit/consume`, a write operation that can spend a reset credit. It rejects unsolicited server requests and never starts model work. Missing history in older servers does not prevent quota sync.
 
 ## Connect Claude
 
@@ -70,6 +71,12 @@ Credit expiry itself does **not** automatically reset quota. The natural reset r
 Claude five-hour pacing uses `remaining / max(1, hoursUntilReset)`. With 60% left and three hours remaining, the allowance is **20% / hour**. With less than one hour left, the app shows the actual quota available before reset. These are percentage points, **not minutes of work**; other limits still apply.
 
 Missing data is never treated as zero. Cached/unconfirmed values are labeled and use `≈` in the hover summary. Expired windows wait for server confirmation instead of assuming restored quota.
+
+### Use a reset credit in the app
+
+Select an available credit in the Codex reset section and confirm to use that specific credit. You do not need to enable automatic redemption or wait until the credit is near expiry. Agent Pace rechecks the current account and credit before sending the request; the server decides whether it can be used. A successful reset restores eligible limits and refreshes the displayed quota and credit count. Unused quota is not added to the restored allowance, and the next reset times can change.
+
+If a network interruption leaves the result unknown, Agent Pace pauses redemption of other credits until the outcome is resolved. Any retry of that request keeps the same request key to avoid spending a second credit. Neither clicking refresh nor reopening the app creates a new redemption request for an uncertain attempt.
 
 ### Optional automatic reset redemption
 
