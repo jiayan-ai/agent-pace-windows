@@ -63,7 +63,7 @@ availableToday = min(currentRemaining, dailyAllowance - observedUseSinceFirstSyn
 
 The daily allowance stays fixed until the next day, account/timezone change, a reset, or a decrease in reported usage. Small reset timestamp jitter preserves the baseline. Usage before first sync cannot be reconstructed. Overspending stays negative and is not deducted twice on the following day.
 
-When an available Codex reset credit has a known expiry before the selected main Codex window's natural reset, the expiry becomes the planning deadline. The panel and tray show a rolling hourly suggestion instead of the daily balance: 50% remaining and a credit expiring in 10 hours gives **5% / hour**. During the final partial hour the app shows the actual remaining quota before expiry. The calculation uses the earliest eligible credit and confirmed account data; unknown expiry times are never guessed.
+When an available Codex reset credit expires within 72 hours and before the selected main Codex window's natural reset, the expiry becomes the planning deadline. The panel and tray show a rolling hourly suggestion instead of the daily balance: 50% remaining and a credit expiring in 10 hours gives **5% / hour**. During the final partial hour the app shows the actual remaining quota before expiry. When no credit meets these conditions, the normal daily budget remains in view. The calculation uses the earliest eligible credit and confirmed account data; unknown expiry times are never guessed.
 
 The credit expiring does **not** automatically reset quota. If needed, use it manually in Codex before it expires. The natural reset remains separate. If the snapshot still lists a credit as available after its recorded expiry, refresh to confirm its status.
 

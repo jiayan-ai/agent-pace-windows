@@ -38,9 +38,13 @@ public sealed class Store : IDisposable
     public string Provider => History.SelectedProvider;
     public ProviderHistory Current => History.For(Provider);
     public bool Busy => busy.Contains(Provider);
-    public bool Stale => !verified.Contains(Provider) || errors.ContainsKey(Provider) || Current.Snapshot is not { } s || (Now - s.FetchedAt).TotalSeconds is < 0 or > 600 || Provider == "codex" && HasExpiredCredit(s, Now);
-    static bool HasExpiredCredit(Snapshot snapshot, DateTimeOffset now) => snapshot.Credits is { AvailableCount: > 0 } && (snapshot.Credits.Credits ?? []).Any(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits" && c.Expiry is { } expiry && expiry <= now);
-    public bool CreditExpired => Provider == "codex" && Current.Snapshot is { } snapshot && HasExpiredCredit(snapshot, Now);
+    public bool Stale => !verified.Contains(Provider) || errors.ContainsKey(Provider) || Current.Snapshot is not { } s || (Now - s.FetchedAt).TotalSeconds is < 0 or > 600 || Provider == "codex" && HasExpiredCredit(Current, Now);
+    static bool HasExpiredCredit(ProviderHistory history, DateTimeOffset now)
+    {
+        var selected = history.Snapshot?.Windows.FirstOrDefault(w => w.Id == history.SelectedId) ?? history.Snapshot?.Windows.FirstOrDefault();
+        return AgentPace.Core.CreditPace.HasExpiredCreditRequiringConfirmation(history.Snapshot, selected, now);
+    }
+    public bool CreditExpired => Provider == "codex" && HasExpiredCredit(Current, Now);
     public PaceException? Error => errors.GetValueOrDefault(Provider);
     public MeteredWindow? Selected => Current.Snapshot?.Windows.FirstOrDefault(w => w.Id == Current.SelectedId) ?? Current.Snapshot?.Windows.FirstOrDefault();
     public SessionPace? Session => Provider == "claude" && Selected?.Window.WindowDurationMins == 300 ? new(Selected.Window, Now) : null;
@@ -127,7 +131,7 @@ public sealed class Store : IDisposable
         foreach (var p in new[] { "codex", "claude" })
         {
             var state = History.For(p);
-            var expired = state.Snapshot is { } snapshot && (p == "claude" && snapshot.Windows.Any(w => w.Window.ResetDate <= Now) || p == "codex" && HasExpiredCredit(snapshot, Now));
+            var expired = state.Snapshot is { } snapshot && (p == "claude" && snapshot.Windows.Any(w => w.Window.ResetDate <= Now) || p == "codex" && HasExpiredCredit(state, Now));
             if (force || !next.TryGetValue(p, out var due) || Now >= due || expired && errors.GetValueOrDefault(p)?.RetrySeconds is not > 0 && attempted.GetValueOrDefault(p) <= Now.AddMinutes(-1))
                 _ = Refresh(p);
         }

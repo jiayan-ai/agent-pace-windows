@@ -71,16 +71,36 @@ public sealed record SessionPace(UsageWindow Window, DateTimeOffset Now)
 // A credit's expiry is a planning deadline, not a scheduled quota reset.
 public sealed record CreditPace(UsageWindow Window, DateTimeOffset Expiry, DateTimeOffset Now)
 {
+    private static readonly TimeSpan PlanningHorizon = TimeSpan.FromHours(72);
     private SessionPace Pace => new(Window with { ResetsAt = Expiry.ToUnixTimeMilliseconds() / 1000d }, Now);
     public bool FinalHour => Pace.FinalHour;
     public double? Allowance => Pace.Allowance;
     public string Countdown => Pace.Countdown;
+    // An old expired record alone cannot affect the current daily plan. If an
+    // approaching credit is also reported, the available count is uncertain.
+    public static bool HasExpiredCreditRequiringConfirmation(Snapshot? snapshot, MeteredWindow? selected, DateTimeOffset now)
+    {
+        if (snapshot?.Credits is not { AvailableCount: > 0 } credits || selected is not { BucketId: "codex" } ||
+            selected.Window.Remaining is null || selected.Window.WindowDurationMins is not > 0 ||
+            selected.Window.ResetDate is not { } reset || reset <= now)
+            return false;
+        var expiries = (credits.Credits ?? [])
+            .Where(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits")
+            .Select(c => c.Expiry).Where(e => e is not null && e < reset).Select(e => e!.Value).ToList();
+        return expiries.Any(e => e <= now) &&
+            (expiries.Any(e => e <= now && now - e <= PlanningHorizon) ||
+             expiries.Any(e => e > now && e - now <= PlanningHorizon));
+    }
     public static bool NeedsConfirmation(Snapshot? snapshot, MeteredWindow? selected, bool stale, DateTimeOffset now)
     {
-        if (snapshot?.Credits is not { AvailableCount: > 0 } credits || selected is not { BucketId: "codex" })
+        if (HasExpiredCreditRequiringConfirmation(snapshot, selected, now))
+            return true;
+        if (!stale || snapshot?.Credits is not { AvailableCount: > 0 } credits || selected is not { BucketId: "codex" } ||
+            selected.Window.Remaining is null || selected.Window.WindowDurationMins is not > 0 ||
+            selected.Window.ResetDate is not { } reset || reset <= now)
             return false;
         return (credits.Credits ?? []).Any(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits" && c.Expiry is { } expiry &&
-            (expiry <= now || credits.AvailableCount > 0 && stale && selected.Window.ResetDate is { } reset && expiry < reset));
+            expiry > now && expiry - now <= PlanningHorizon && expiry < reset);
     }
     public static CreditPace? Evaluate(Snapshot? snapshot, MeteredWindow? selected, bool stale, DateTimeOffset now)
     {
@@ -91,7 +111,7 @@ public sealed record CreditPace(UsageWindow Window, DateTimeOffset Expiry, DateT
         var expiry = (credits.Credits ?? [])
             .Where(c => c is not null && c.Status == "available" && c.ResetType == "codexRateLimits")
             .Select(c => c.Expiry)
-            .Where(e => e is not null && e > now && e < naturalReset)
+            .Where(e => e is not null && e > now && e - now <= PlanningHorizon && e < naturalReset)
             .Min();
         return expiry is { } deadline ? new(selected.Window, deadline, now) : null;
     }

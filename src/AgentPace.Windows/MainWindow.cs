@@ -157,7 +157,7 @@ public sealed class MainWindow : Window
             footer.Children.Add(Button(L.T("退出", "Quit"), () => ((App)Application.Current).ExitApp()));
             root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步", $"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"), 11, false, muted));
-            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.2" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
+            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.3" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
             scroll.Content = root;
             scroll.ScrollToVerticalOffset(offset);
         }
