@@ -100,7 +100,9 @@ Check("reset plan includes expiry date and does not add natural resets", () => {
     var b = ResetPlanBudget.Reconcile(null, s, w, date, TimeZoneInfo.Utc)!;
     Assert(b.PlanningDays == 6); Near(b.StartingTotal, 200); Near(b.Allowance, 200d / 6); Near(b.LeftToday(s, w, date), 200d / 6);
     var firstReset = w with { Window = w.Window with { ResetsAt = date.AddDays(4).ToUnixTimeSeconds() } };
-    Assert(ResetPlanBudget.Reconcile(null, s, firstReset, date, TimeZoneInfo.Utc) is null);
+    var beforeExpiry = ResetPlanBudget.Reconcile(null, s, firstReset, date, TimeZoneInfo.Utc)!;
+    Assert(beforeExpiry.PlanningDays == 6); Near(beforeExpiry.StartingTotal, 200); Near(beforeExpiry.Allowance, 200d / 6); Near(beforeExpiry.Capacity(s, firstReset, date), 200);
+    Assert(CreditPace.Evaluate(s, firstReset, false, date) is null);
     Assert(CreditPace.Evaluate(s, w, false, date) is null);
 });
 Check("reset plan only counts unique verified earliest batch", () => {
@@ -134,7 +136,20 @@ Check("reset plan counts confirmed new-cycle use and never resurrects a spent cr
     b = ResetPlanBudget.Reconcile(b, redeemed, resetWindow, now.AddHours(2), TimeZoneInfo.Utc)!; Near(b.Consumed, 100); Near(b.Capacity(redeemed, resetWindow, now), 80);
     b = ResetPlanBudget.Reconcile(b, s, resetWindow, now.AddHours(3), TimeZoneInfo.Utc)!; Near(b.Capacity(s, resetWindow, now), 80);
     var earlier = resetWindow with { Window = resetWindow.Window with { ResetsAt = now.AddDays(2).ToUnixTimeSeconds() } };
-    Near(ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!.Capacity(s, earlier, now), 80);
+    Near(ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!.Capacity(s, earlier, now), 180);
+});
+Check("observed natural reset preserves same-day spending without forecasting another refill", () => {
+    var date = new DateTimeOffset(2026, 11, 5, 9, 0, 0, TimeSpan.Zero);
+    var w = new MeteredWindow("codex", "Codex", "primary", new(0, 10080, date.AddHours(1).ToUnixTimeSeconds()));
+    var s = new Snapshot("a", date, [w], new(1, [Credit(date.AddDays(1).ToUnixTimeSeconds())]));
+    var b = ResetPlanBudget.Reconcile(null, s, w, date, TimeZoneInfo.Utc)!; Near(b.StartingTotal, 200); Near(b.Allowance, 100);
+    var spent = w with { Window = w.Window with { UsedPercent = 40 } };
+    b = ResetPlanBudget.Reconcile(b, s, spent, date.AddMinutes(30), TimeZoneInfo.Utc)!; Near(b.Consumed, 40); Near(b.Capacity(s, spent, date.AddMinutes(30)), 160);
+    var resetWindow = w with { Window = w.Window with { UsedPercent = 10, ResetsAt = date.AddDays(7).ToUnixTimeSeconds() } };
+    var refreshed = s with { FetchedAt = date.AddHours(2), Windows = [resetWindow] };
+    b = ResetPlanBudget.Reconcile(b, refreshed, resetWindow, refreshed.FetchedAt, TimeZoneInfo.Utc)!;
+    Near(b.Consumed, 50); Near(b.Allowance, 100); Near(b.StartingTotal, 200); Near(b.Capacity(refreshed, resetWindow, refreshed.FetchedAt), 190); Near(b.LeftToday(refreshed, resetWindow, refreshed.FetchedAt), 50);
+    Assert(b.RemainingCreditIds!.Count == 1);
 });
 Check("reset plan local date includes DST expiry day", () => {
     var date = new DateTimeOffset(2026, 10, 31, 19, 0, 0, TimeSpan.Zero); var zone = TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles");

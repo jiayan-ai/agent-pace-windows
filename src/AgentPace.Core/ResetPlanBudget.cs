@@ -16,7 +16,7 @@ public sealed record ResetPlanBudget(string Day, string TimeZoneId, DateTimeOffs
             selected.Window.ResetDate is not { } reset || reset <= now || selected.Window.WindowDurationMins != Duration ||
             snapshot.Credits is not { AvailableCount: >= 0 } credits || credits.Credits is null)
             return null;
-        var valid = ValidCredits(credits, now).Where(c => (RemainingCreditIds ?? CreditIds).Contains(c.Id) && c.ExpiresAt == ExpiryAt && c.Expiry < reset).ToList();
+        var valid = ValidCredits(credits, now).Where(c => (RemainingCreditIds ?? CreditIds).Contains(c.Id) && c.ExpiresAt == ExpiryAt).ToList();
         return remaining + Math.Min(credits.AvailableCount, valid.Count) * 100d;
     }
     public double? LeftToday(Snapshot snapshot, MeteredWindow selected, DateTimeOffset now) =>
@@ -36,7 +36,7 @@ public sealed record ResetPlanBudget(string Day, string TimeZoneId, DateTimeOffs
             var confirmedReset = resetAdvanced && (Json.Unix(old.LastResetAt) <= now || used + .001 < old.LastUsed);
             var remainingIds = old.RemainingCreditIds ?? old.CreditIds;
             if (snapshot.Credits is { AvailableCount: >= 0, Credits: not null } currentCredits)
-                remainingIds = ValidCredits(currentCredits, now).Where(c => remainingIds.Contains(c.Id) && c.ExpiresAt == old.ExpiryAt && c.Expiry < end)
+                remainingIds = ValidCredits(currentCredits, now).Where(c => remainingIds.Contains(c.Id) && c.ExpiresAt == old.ExpiryAt)
                     .Select(c => c.Id).Order(StringComparer.Ordinal).Take(currentCredits.AvailableCount).ToList();
             return old with { Consumed = old.Consumed + (confirmedReset ? used : Math.Max(0, used - old.LastUsed)), LastUsed = used, LastResetAt = reset, RemainingCreditIds = remainingIds };
         }
@@ -44,7 +44,9 @@ public sealed record ResetPlanBudget(string Day, string TimeZoneId, DateTimeOffs
             return old;
         if (snapshot.Credits is not { AvailableCount: > 0 } credits)
             return null;
-        var eligible = ValidCredits(credits, now).Where(c => c.Expiry < end).ToList();
+        // The pool contains current actual quota and verified credits only.
+        // A natural reset before credit expiry adds no forecast capacity.
+        var eligible = ValidCredits(credits, now);
         if (eligible.Count == 0)
             return null;
         var expiry = eligible.Min(c => c.Expiry)!.Value;
