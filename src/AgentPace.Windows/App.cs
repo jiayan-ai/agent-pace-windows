@@ -84,7 +84,7 @@ public sealed class App : Application
         var tooltip = summary + "\n" + (store.CreditNeedsConfirmation ? L.T("等待刷新确认 Reset 券", "Awaiting reset credit confirmation") : store.CreditPace is { } pace ? L.T("Reset 券到期：", "Reset credit expires in: ") + pace.Countdown : store.Session?.Countdown ?? L.Date(store.Selected?.Window.ResetDate));
         tray.Text = tooltip.Length > 127 ? tooltip[..127] : tooltip;
         var remaining = store.Selected?.Window.Remaining;
-        var overBudget = !store.CreditNeedsConfirmation && store.CreditPace is null && store.Budget?.OverBudget > 0;
+        var overBudget = !store.CreditNeedsConfirmation && store.CreditPace is null && store.DailyOverBudget;
         var state = $"{store.Provider}/{Math.Round(remaining ?? -1)}/{overBudget}/{store.Stale}/{L.Language}";
         if (state != trayState)
         {
@@ -154,6 +154,9 @@ public sealed class App : Application
                 var expected = provider == "claude" ? (language == "en" ? "Suggested hourly allowance" : "接下来每小时建议可用") : (language == "en" ? "Available today" : "今天还可以用");
                 if (!TextContent(details).Contains(expected))
                     throw new InvalidOperationException("Localized screen missing: " + expected);
+                var tokenHeading = provider == "codex" ? (language == "en" ? "Codex account token activity" : "Codex 账户 Token 活动") : (language == "en" ? "Recorded Claude Code tokens on this device" : "本机 Claude Code 已记录 Token");
+                if (!TextContent(details).Contains(tokenHeading) || !TextContent(details).Contains(language == "en" ? "Recorded in the last 30 days" : "近 30 天已记录"))
+                    throw new InvalidOperationException("Localized token screen missing: " + tokenHeading);
                 var visual = (FrameworkElement)details.Content;
                 var bitmap = new RenderTargetBitmap((int)visual.ActualWidth, (int)visual.ActualHeight, 96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(visual);
@@ -164,6 +167,13 @@ public sealed class App : Application
             }
             store!.SelectProvider("codex");
             var codex = store.Current.Snapshot!;
+            store.Current.Ingest(codex with { Credits = new(1, [new("demo-plan", "codexRateLimits", "available", null, store.Now.AddDays(5).ToUnixTimeSeconds(), null, null)]) });
+            store.Language("en");
+            details!.Render();
+            details.UpdateLayout();
+            if (!TextContent(details).Contains("Daily plan with resets") || !TextContent(details).Contains("Planned allowance today") || store.ResetPlan?.PlanningDays != 6)
+                throw new InvalidOperationException("Reset pool daily plan missing");
+            store.Current.ResetPlans.Clear();
             store.Current.Ingest(codex with { Credits = new(1, [new("demo", "codexRateLimits", "available", null, store.Now.AddHours(10).ToUnixTimeSeconds(), null, null)]) });
             foreach (var language in new[] { "en", "zh-Hans" })
             {

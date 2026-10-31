@@ -10,15 +10,36 @@ public sealed record ResetCredits([property: System.Text.Json.Serialization.Json
     public IEnumerable<ResetCredit> Usable(DateTimeOffset now) => (Credits ?? []).Where(c => c.Status == "available" && c.ResetType == "codexRateLimits" && (c.ExpiresAt is null || c.Expiry > now)).OrderBy(c => c.Expiry ?? DateTimeOffset.MaxValue);
 }
 public sealed record DailyActivity(string StartDate, [property: System.Text.Json.Serialization.JsonRequired] double Tokens);
-public sealed record AccountActivity(List<DailyActivity>? DailyUsageBuckets)
+public sealed record ActivitySummary(double? LifetimeTokens, double? PeakDailyTokens)
+{
+    public ActivitySummary Clean() => new(Valid(LifetimeTokens), Valid(PeakDailyTokens));
+    static double? Valid(double? value) => value is { } n && double.IsFinite(n) && n >= 0 && n <= 9_007_199_254_740_991 && n == Math.Truncate(n) ? n : null;
+}
+public sealed record AccountActivity(List<DailyActivity>? DailyUsageBuckets, ActivitySummary? Summary = null)
 {
     public static DateOnly? Date(string? text) => DateOnly.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : null;
-    public AccountActivity Recent(DateTimeOffset now)
+    // Keep today's UTC bucket for the token card. Pattern analysis still uses
+    // completed days only, so an incomplete day cannot distort the trend.
+    public AccountActivity Clean(DateTimeOffset now, bool includeToday = true)
     {
         if (DailyUsageBuckets is null)
-            return this;
+            return this with { Summary = Summary?.Clean() };
         var today = DateOnly.FromDateTime(now.UtcDateTime);
-        return new(DailyUsageBuckets.Where(x => x is not null && double.IsFinite(x.Tokens) && x.Tokens >= 0 && Date(x.StartDate) is { } d && d >= today.AddDays(-30) && d < today).GroupBy(x => x.StartDate).Select(g => g.MaxBy(x => x.Tokens)!).OrderBy(x => x.StartDate, StringComparer.Ordinal).ToList());
+        return new(DailyUsageBuckets.Where(x => x is not null && double.IsFinite(x.Tokens) && x.Tokens >= 0 && x.Tokens <= 9_007_199_254_740_991 && x.Tokens == Math.Truncate(x.Tokens) && Date(x.StartDate) is { } d && d >= today.AddDays(-30) && (includeToday ? d <= today : d < today)).GroupBy(x => x.StartDate).Select(g => g.MaxBy(x => x.Tokens)!).OrderBy(x => x.StartDate, StringComparer.Ordinal).ToList(), Summary?.Clean());
+    }
+    public AccountActivity Recent(DateTimeOffset now) => Clean(now, includeToday: false);
+    public double? TodayTokens(DateTimeOffset now) => Clean(now).DailyUsageBuckets?.FirstOrDefault(d => d.StartDate == now.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))?.Tokens;
+    public List<DailyActivity>? Last30Days(DateTimeOffset now) => Clean(now).DailyUsageBuckets?.Where(d => Date(d.StartDate) >= DateOnly.FromDateTime(now.UtcDateTime).AddDays(-29)).ToList();
+    public double? Last30Tokens(DateTimeOffset now)
+    {
+        if (Last30Days(now) is not { Count: > 0 } days) return null;
+        double total = 0;
+        foreach (var day in days)
+        {
+            if (day.Tokens > 9_007_199_254_740_991 - total) return null;
+            total += day.Tokens;
+        }
+        return total;
     }
 }
 public sealed class UsagePattern

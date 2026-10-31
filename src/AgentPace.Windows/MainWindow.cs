@@ -140,6 +140,7 @@ public sealed class MainWindow : Window
             }
             else
                 root.Children.Add(Card(Text(store.Busy ? L.T("正在读取额度…", "Reading usage…") : L.T("等待额度数据", "Waiting for usage data"), 22, true), Text(store.Provider == "codex" ? L.T("安装并登录 Codex CLI；可在设置中指定 codex.exe 或 WSL 发行版。", "Install and sign in to Codex CLI. Settings accepts codex.exe or a WSL distribution.") : L.T("在工具内登录 Claude 后自动同步。", "Connect Claude in this app to sync automatically."), 13, false, muted)));
+            Tokens(root);
             if (store.Error is { } error)
                 root.Children.Add(Text(error.Message, 13, false, Brushes.DarkOrange));
             if (store.PersistenceError is { } persistence)
@@ -152,14 +153,14 @@ public sealed class MainWindow : Window
             }
             Settings(root);
             var footer = new WrapPanel { Margin = new Thickness(0, 15, 0, 0) };
-            var refresh = Button(store.Busy ? L.T("同步中…", "Syncing…") : L.T("刷新", "Refresh"), async () => await store.Refresh());
+            var refresh = Button(store.Busy ? L.T("同步中…", "Syncing…") : L.T("刷新", "Refresh"), async () => await store.RefreshSelected());
             refresh.IsEnabled = !store.Busy;
             footer.Children.Add(refresh);
             footer.Children.Add(Button(L.T("置顶", "Pin window"), () => { Topmost = !Topmost; Render(); }));
             footer.Children.Add(Button(L.T("退出", "Quit"), () => ((App)Application.Current).ExitApp()));
             root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步", $"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"), 11, false, muted));
-            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.6" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
+            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.7" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
             scroll.Content = root;
             scroll.ScrollToVerticalOffset(offset);
         }
@@ -173,12 +174,14 @@ public sealed class MainWindow : Window
         root.Children.Add(Card(Text(pace.FinalHour ? L.T("到期前还可使用", "Available before expiry") : L.T("接下来每小时建议可用", "Suggested hourly allowance"), 16, true, muted), Text(L.Number(pace.Allowance) + (pace.FinalHour ? "%" : L.T("% / 小时", "% / hour")), 40, true, accent), Text(pace.FinalHour ? L.T("不足一小时，显示当前周期实际剩余额度。", "Less than one hour remains; showing the actual remaining quota.") : L.T("按当前剩余额度与券到期前的小时数动态均摊。", "Current remaining quota spread evenly over the hours until credit expiry."), 13, false, muted), Text(L.T("券到期不会自动恢复额度；可在 Reset 助手中立即使用，或在设置中开启自动使用。其他额度窗口仍可能限制使用。", "Expiry does not restore quota. Use a credit in Reset advisor or enable automatic redemption in Settings. Other quota windows may still limit usage."), 12, false, muted)));
         root.Children.Add(Text(L.T($"本周期剩余 {L.Number(selected.Window.Remaining)}% · 自然重置 {L.Date(selected.Window.ResetDate)}", $"This window: {L.Number(selected.Window.Remaining)}% remaining · Natural reset {L.Date(selected.Window.ResetDate)}"), 13, false, muted));
         root.Children.Add(Progress(selected.Window.Remaining ?? 0, accent));
+        ResetPlan(root);
     }
     void Daily(StackPanel root, MeteredWindow selected)
     {
         var b = store.Budget;
-        var color = b?.OverBudget > 0 ? Brushes.IndianRed : accent;
-        root.Children.Add(Card(Text((b?.OverBudget > 0 ? L.T("今日预算已超额", "Over today's budget") : L.T("今天还可以用", "Available today")) + (store.Stale ? L.T(" · 上次记录", " · Last known") : ""), 16, true, muted), Text(L.Number(b?.LeftToday) + "%", 56, true, color), Text(selected.BucketId == "claude_fable" ? L.T("占 Fable 周额度的百分比", "Percentage of Fable weekly quota") : L.T("占本周期总额度的百分比", "Percentage of this window's quota"), 12, false, muted)));
+        var plan = store.ResetPlan;
+        var color = store.DailyOverBudget ? Brushes.IndianRed : accent;
+        root.Children.Add(Card(Text((store.DailyOverBudget ? L.T("今日预算已超额", "Over today's budget") : plan is not null ? L.T("今天计划还可以用", "Planned allowance today") : L.T("今天还可以用", "Available today")) + (store.Stale ? L.T(" · 上次记录", " · Last known") : ""), 16, true, muted), Text(L.Number(store.PlannedLeftToday ?? b?.LeftToday) + "%", 56, true, color), Text(plan is not null ? L.T("含 Reset 的计划预算；用券后才能恢复额外额度", "Plan includes resets; redeem to restore the extra quota") : selected.BucketId == "claude_fable" ? L.T("占 Fable 周额度的百分比", "Percentage of Fable weekly quota") : L.T("占本周期总额度的百分比", "Percentage of this window's quota"), 12, false, muted)));
         if (selected.BucketId == "claude_fable")
             root.Children.Add(Text(L.T("Fable 使用也计入总周额度，仍受五小时额度限制。", "Fable also counts toward the overall weekly quota and remains subject to the five-hour limit."), 12, false, muted));
         var metrics = new UniformGridShim(2);
@@ -193,10 +196,57 @@ public sealed class MainWindow : Window
         right.Children.Add(Text(L.Date(selected.Window.ResetDate), 12, false, muted));
         metrics.Children.Add(right);
         root.Children.Add(Card(metrics));
-        if (b is not null)
+        if (plan is not null)
+            ResetPlan(root);
+        else if (b is not null)
             root.Children.Add(Card(Text(L.T($"今日预算  {L.Number(b.Allowance)}%", $"Today's budget  {L.Number(b.Allowance)}%"), 14, true), Progress(b.Allowance > 0 ? Math.Clamp(b.Consumed / b.Allowance * 100, 0, 100) : 100, color), Text(L.T($"已用 {L.Number(b.Consumed)}% · 从 {b.StartedAt.ToLocalTime():HH:mm} 首次同步起", $"Used {L.Number(b.Consumed)}% · Since first sync at {b.StartedAt.ToLocalTime():HH:mm}"), 12, false, muted)));
         else
             root.Children.Add(Text(L.T("等待有效额度与重置时间，确认今日预算。", "Waiting for valid quota and reset time before calculating today's budget."), 12, false, muted));
+    }
+    void ResetPlan(StackPanel root)
+    {
+        if (store.ResetPlan is not { } plan) return;
+        root.Children.Add(Card(Text(L.T("含 Reset 的每日计划", "Daily plan with resets"), 16, true),
+            Text(L.T($"({L.Number(plan.StartingRemaining)}% + {plan.CreditIds.Count} × 100%) ÷ {plan.PlanningDays} 天 = {L.Number(plan.Allowance)}% / 天", $"({L.Number(plan.StartingRemaining)}% + {plan.CreditIds.Count} × 100%) ÷ {plan.PlanningDays} days = {L.Number(plan.Allowance)}% / day"), 13, false, muted),
+            Text(L.T($"今日计划 {L.Number(plan.Allowance)}% · 还可用 {L.Number(store.PlannedLeftToday)}%", $"Today's plan {L.Number(plan.Allowance)}% · {L.Number(store.PlannedLeftToday)}% left"), 16, true, accent),
+            Text(L.T($"从首次同步起已观测消耗 {L.Number(plan.Consumed)}%；重置间隙未观测用量不推测。", $"Observed use since first sync: {L.Number(plan.Consumed)}%; usage between reset observations is unknown."), 12, false, muted),
+            Text(L.T($"按本地日历包含今天与到期日：{L.Date(plan.Expiry)}。仅计最早同批券，须在到期前使用；剩余额度不叠加，其他窗口仍会限制使用。", $"Local calendar includes today and expiry day: {L.Date(plan.Expiry)}. Only the earliest credit batch is included. Redeem before expiry; unused quota does not stack and other windows still apply."), 12, false, muted)));
+    }
+    void Tokens(StackPanel root)
+    {
+        string Number(double? value) => value?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
+        string Exact(long? value) => value?.ToString("N0", CultureInfo.CurrentCulture) ?? "—";
+        var content = new StackPanel();
+        content.Children.Add(Text(store.Provider == "codex" ? L.T("Codex 账户 Token 活动", "Codex account token activity") : L.T("本机 Claude Code 已记录 Token", "Recorded Claude Code tokens on this device"), 16, true));
+        if (store.Provider == "codex")
+        {
+            var history = store.Current;
+            var activity = history.Activity?.Clean(store.Now);
+            content.Children.Add(Text(L.T("今日（UTC）", "Today (UTC)") + "  " + Number(activity?.TodayTokens(store.Now)), 22, true, accent));
+            content.Children.Add(Text(L.T("近 30 天已记录", "Recorded in the last 30 days") + "  " + Number(activity?.Last30Tokens(store.Now)), 16, true));
+            content.Children.Add(Text(L.T($"含今日 · {activity?.Last30Days(store.Now)?.Count ?? 0}/30 天有记录；缺失不按 0 计。", $"Including today · {activity?.Last30Days(store.Now)?.Count ?? 0}/30 days recorded; missing days are unknown."), 12, false, muted));
+            content.Children.Add(Text(L.T("累计", "Lifetime") + "  " + Number(activity?.Summary?.LifetimeTokens) + " · " + L.T("单日峰值", "Peak day") + "  " + Number(activity?.Summary?.PeakDailyTokens), 13));
+            content.Children.Add(Text(L.T("来源：Codex 账户用量接口；服务端 Token 活动，不由额度百分比换算。接口未标明仅限 Code。", "Source: Codex account usage API; server-reported token activity, not converted from quota. The API does not specify Code-only coverage."), 12, false, muted));
+            var fresh = history.ActivityFetchedAt is { } at && (store.Now - at).TotalMinutes is >= 0 and <= 10;
+            content.Children.Add(Text(history.ActivityFetchedAt is { } date ? (fresh ? L.T("更新于 ", "Updated ") : L.T("上次记录 · ", "Last known · ")) + L.Date(date) : L.T("Token 数据暂不可用", "Token data unavailable"), 11, false, fresh ? muted : Brushes.DarkOrange));
+        }
+        else
+        {
+            var local = store.LocalClaudeTokens;
+            var currentDay = local?.Day == store.Now.ToString("yyyy-MM-dd") && local.TimeZoneId == TimeZoneInfo.Local.Id;
+            content.Children.Add(Text(L.T("今日（本地）", "Today (local)") + "  " + Exact(currentDay ? local?.Today?.Total : null), 22, true, accent));
+            content.Children.Add(Text(L.T("近 30 天已记录", "Recorded in the last 30 days") + "  " + Exact(local?.Last30Days?.Total), 16, true));
+            if (local?.Last30Days is { } counts)
+                content.Children.Add(Text(L.T($"输入 {Exact(counts.Input)} · 输出 {Exact(counts.Output)}\n缓存写入 {Exact(counts.CacheWrite)} · 缓存读取 {Exact(counts.CacheRead)}", $"Input {Exact(counts.Input)} · Output {Exact(counts.Output)}\nCache write {Exact(counts.CacheWrite)} · Cache read {Exact(counts.CacheRead)}"), 12, false, muted));
+            content.Children.Add(Text(L.T($"含今日 · {local?.RecordedDays ?? 0}/30 天有记录；合计为输入、输出、缓存写入与读取之和。", $"Including today · {local?.RecordedDays ?? 0}/30 days recorded; total includes input, output, cache write and cache read."), 12, false, muted));
+            content.Children.Add(Text(L.T("来源：本机 Claude Code 会话日志（桌面 Code / CLI）。记录无法关联当前网页登录账户，不代表跨设备账户总量；缺失不是 0。", "Source: local Claude Code session logs (desktop Code / CLI). Records cannot be linked to the connected web account and are not an account total across devices; missing data is unknown."), 12, false, muted));
+            if (local?.Incomplete == true)
+                content.Children.Add(Text(L.T("部分日志不可读、字段缺失或超出扫描上限；合计不完整。", "Some logs were unreadable, incomplete or exceeded scan limits; totals are partial."), 12, false, Brushes.DarkOrange));
+            var fresh = local is not null && !store.TokensFailed && (store.Now - local.FetchedAt).TotalMinutes is >= 0 and <= 10 && currentDay;
+            content.Children.Add(Text(store.TokensBusy ? L.T("正在读取本机记录…", "Reading local records…") : local is null ? L.T("未找到可用 Token 记录", "No usable token records found") : (fresh ? L.T("更新于 ", "Updated ") : L.T("上次记录 · ", "Last known · ")) + L.Date(local.FetchedAt), 11, false, fresh ? muted : Brushes.DarkOrange));
+            content.ToolTip = local?.SourceRoot ?? ClaudeTokens.DefaultRoot;
+        }
+        root.Children.Add(Card(content));
     }
     void Session(StackPanel root, SessionPace pace)
     {

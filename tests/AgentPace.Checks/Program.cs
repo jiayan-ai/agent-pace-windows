@@ -93,6 +93,54 @@ Check("manual and automatic share cooldown across credits and resist clock rollb
     Assert(ManualReset.Prepare(j, s with { FetchedAt = now.AddMinutes(5) }, "a", other.Id, other.Expiry, now.AddMinutes(5)) is not null);
 });
 Check("per-account history isolation", () => { var h = new ProviderHistory(); h.Ingest(Snap()); h.Ingest(Snap(used: 40)); Near(h.Budgets.Values.Single().Consumed, 10); h.Ingest(Snap("b", 40)); Near(h.Budgets.Values.Single().Consumed, 0); });
+Check("reset plan includes expiry date and does not add natural resets", () => {
+    var date = new DateTimeOffset(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
+    var w = new MeteredWindow("codex", "Codex", "primary", new(0, 10080, date.AddDays(7).ToUnixTimeSeconds()));
+    var s = new Snapshot("a", date, [w], new(1, [Credit(date.AddDays(5).ToUnixTimeSeconds())]));
+    var b = ResetPlanBudget.Reconcile(null, s, w, date, TimeZoneInfo.Utc)!;
+    Assert(b.PlanningDays == 6); Near(b.StartingTotal, 200); Near(b.Allowance, 200d / 6); Near(b.LeftToday(s, w, date), 200d / 6);
+    var firstReset = w with { Window = w.Window with { ResetsAt = date.AddDays(4).ToUnixTimeSeconds() } };
+    Assert(ResetPlanBudget.Reconcile(null, s, firstReset, date, TimeZoneInfo.Utc) is null);
+    Assert(CreditPace.Evaluate(s, w, false, date) is null);
+});
+Check("reset plan only counts unique verified earliest batch", () => {
+    var c = Credit(now.AddDays(5).ToUnixTimeSeconds()); var w = Snap().Windows[0];
+    var s = Snap() with { Credits = new(3, [c, c with { Id = "same-day" }, c with { Id = "later", ExpiresAt = now.AddDays(6).ToUnixTimeSeconds() }]) };
+    var b = ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!; Assert(b.CreditIds.Count == 2); Near(b.StartingTotal, 270);
+    Assert(ResetPlanBudget.Reconcile(null, s with { Credits = new(1, s.Credits!.Credits) }, w, now) is null);
+    Assert(ResetPlanBudget.Reconcile(null, s with { Credits = new(2, [c, c]) }, w, now) is null);
+    Assert(ResetPlanBudget.Reconcile(null, s with { Credits = new(1, [Credit(null)]) }, w, now) is null);
+});
+Check("reset plan freezes daily allowance across redemption and tracks observed use once", () => {
+    var s = Snap(used: 0) with { Credits = new(1, [Credit(now.AddDays(5).ToUnixTimeSeconds())]) }; var w = s.Windows[0];
+    var b = ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!;
+    var spent = w with { Window = w.Window with { UsedPercent = 40 } }; b = ResetPlanBudget.Reconcile(b, s, spent, now.AddHours(1), TimeZoneInfo.Utc)!; Near(b.Consumed, 40);
+    var restored = w with { Window = w.Window with { UsedPercent = 0, ResetsAt = reset + 3600 } }; var after = s with { Credits = new(0, []), Windows = [restored] };
+    b = ResetPlanBudget.Reconcile(b, after, restored, now.AddHours(2), TimeZoneInfo.Utc)!; Near(b.Consumed, 40); Near(b.Allowance, 200d / 6); Near(b.Capacity(after, restored, now), 100);
+    b = ResetPlanBudget.Reconcile(b, after, restored, now.AddHours(2), TimeZoneInfo.Utc)!; Near(b.Consumed, 40); Near(b.LeftToday(after, restored, now), 200d / 6 - 40);
+    Assert(ResetPlanBudget.Reconcile(b, after, restored, now.AddDays(1), TimeZoneInfo.Utc) is null);
+});
+Check("reset plan keeps ledger but cannot display unknown credit capacity", () => {
+    var s = Snap() with { Credits = new(1, [Credit(now.AddDays(5).ToUnixTimeSeconds())]) }; var w = s.Windows[0];
+    var b = ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!; var missing = s with { Credits = null };
+    Assert(ResetPlanBudget.Reconcile(b, missing, w, now.AddDays(1), TimeZoneInfo.Utc) == b); Assert(b.LeftToday(missing, w, now) is null);
+    var h = new ProviderHistory(); h.Ingest(s); Assert(h.ResetPlans.Count == 1); h.Ingest(Snap("b")); Assert(h.ResetPlans.Count == 0);
+});
+Check("reset plan counts confirmed new-cycle use and never resurrects a spent credit", () => {
+    var s = Snap(used: 0) with { Credits = new(1, [Credit(now.AddDays(5).ToUnixTimeSeconds())]) }; var w = s.Windows[0];
+    var b = ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!; var spent = w with { Window = w.Window with { UsedPercent = 80 } };
+    b = ResetPlanBudget.Reconcile(b, s, spent, now.AddHours(1), TimeZoneInfo.Utc)!;
+    var resetWindow = w with { Window = w.Window with { UsedPercent = 20, ResetsAt = reset + 7200 } }; var redeemed = s with { Credits = new(0, []) };
+    b = ResetPlanBudget.Reconcile(b, redeemed, resetWindow, now.AddHours(2), TimeZoneInfo.Utc)!; Near(b.Consumed, 100); Near(b.Capacity(redeemed, resetWindow, now), 80);
+    b = ResetPlanBudget.Reconcile(b, s, resetWindow, now.AddHours(3), TimeZoneInfo.Utc)!; Near(b.Capacity(s, resetWindow, now), 80);
+    var earlier = resetWindow with { Window = resetWindow.Window with { ResetsAt = now.AddDays(2).ToUnixTimeSeconds() } };
+    Near(ResetPlanBudget.Reconcile(null, s, w, now, TimeZoneInfo.Utc)!.Capacity(s, earlier, now), 80);
+});
+Check("reset plan local date includes DST expiry day", () => {
+    var date = new DateTimeOffset(2026, 10, 31, 19, 0, 0, TimeSpan.Zero); var zone = TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles");
+    var w = new MeteredWindow("codex", "Codex", "primary", new(0, 10080, date.AddDays(7).ToUnixTimeSeconds())); var s = new Snapshot("a", date, [w], new(1, [Credit(date.AddDays(2).ToUnixTimeSeconds())]));
+    Assert(ResetPlanBudget.Reconcile(null, s, w, date, zone)!.PlanningDays == 3);
+});
 Check("provider selection is independent", () => { var h = new History(); h.For("codex").Ingest(Snap()); h.For("claude").Ingest(Snap("claude")); h.For("claude").SelectedId = "fable"; Assert(h.For("codex").SelectedId == "codex/primary"); });
 Check("budget serialization preserves negative balance", () => { var h = new ProviderHistory(); h.Ingest(Snap()); h.Ingest(Snap(used: 47)); var copy = JsonSerializer.Deserialize<ProviderHistory>(JsonSerializer.Serialize(h, Json.Options), Json.Options)!; Near(copy.Budgets.Values.Single().LeftToday, -7); });
 Check("Codex named buckets take precedence over legacy", () => { using var d = JsonDocument.Parse("""{"rateLimits":{"primary":{"usedPercent":90}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":20,"windowDurationMins":300},"secondary":{"usedPercent":30,"windowDurationMins":10080}}}}"""); var w = UsageParser.Codex(d.RootElement); Assert(w.Count == 2 && w[0].Window.WindowDurationMins == 10080); Near(w[0].Window.Remaining, 70); });
@@ -105,6 +153,42 @@ Check("Claude origin is exact and HTTPS-only", () => { Assert(ClaudeBridge.IsCla
 Check("Claude bridge filters payload and uses GET only", () => { Assert(ClaudeBridge.Script.Contains("method:'GET'") && !ClaudeBridge.Script.Contains("document.cookie") && ClaudeBridge.Script.Contains("fable.length === 1") && ClaudeBridge.Script.Contains("display_name === 'Fable'")); });
 Check("missing activity is distinct from an empty history", () => { Assert(new AccountActivity(null).Recent(now).DailyUsageBuckets is null); Assert(new AccountActivity([]).Recent(now).DailyUsageBuckets!.Count == 0); });
 Check("activity excludes today, invalid dates and duplicates", () => { var a = new AccountActivity([new("2026-10-21", 999), new("2026-10-20", 100), new("2026-10-20", 150), new("2026-02-30", 2), new("2026-10-19", double.NaN)]).Recent(now); Assert(a.DailyUsageBuckets!.Count == 1); Near(a.DailyUsageBuckets[0].Tokens, 150); });
+Check("token activity preserves today and summary independently of history patterns", () => {
+    var a = new AccountActivity([new("2026-10-21", 999), new("2026-10-20", 150), new("2026-09-21", 200)], new(2000, 999)).Clean(now);
+    Near(a.TodayTokens(now), 999); Near(a.Last30Tokens(now), 1149); Assert(a.Recent(now).DailyUsageBuckets!.Count == 2); Near(a.Summary!.LifetimeTokens, 2000);
+    var h = new ProviderHistory(); h.Ingest(Snap() with { Activity = a }); Near(h.Activity!.TodayTokens(now), 999);
+    h.Ingest(Snap("other")); Assert(h.Activity is null && h.ActivityFetchedAt is null);
+});
+Check("summary-only and missing tokens stay explicit", () => {
+    var a = new AccountActivity(null, new(1200, null)).Clean(now); Near(a.Summary!.LifetimeTokens, 1200); Assert(a.TodayTokens(now) is null && a.Last30Tokens(now) is null);
+    var h = new ProviderHistory(); h.Ingest(Snap() with { Activity = a }); Near(h.Activity!.Summary!.LifetimeTokens, 1200);
+    Assert(new AccountActivity([], new(-1, 9_007_199_254_740_992)).Clean(now).Summary is { LifetimeTokens: null, PeakDailyTokens: null });
+    Assert(new AccountActivity([new("2026-10-21", 0)]).TodayTokens(now) == 0);
+});
+Check("Claude transcript tokens deduplicate partial blocks and copies, include caches and exclude Cowork", () => {
+    var root = Path.Combine(Path.GetTempPath(), "AgentPaceTokens-" + Guid.NewGuid()); Directory.CreateDirectory(root);
+    string Row(string id, int input, int output, string entrypoint = "claude-desktop", string date = "2026-10-21T10:00:00Z") => JsonSerializer.Serialize(new { type = "assistant", timestamp = date, entrypoint, sessionId = "session", requestId = "req-" + id, message = new { id, model = "claude-test", usage = new { input_tokens = input, output_tokens = output, cache_creation_input_tokens = 30, cache_read_input_tokens = 40 } } });
+    try {
+        File.WriteAllLines(Path.Combine(root, "a.jsonl"), [Row("a", 10, 2), Row("a", 10, 5), Row("cowork", 900, 900, "local-agent"), Row("old", 9, 9, date: "2026-09-01T10:00:00Z")]);
+        File.WriteAllLines(Path.Combine(root, "b.jsonl"), [Row("a", 10, 5), Row("b", 20, 6, "cli", "2026-10-20T10:00:00Z"), "{\"type\":"]);
+        var result = ClaudeTokens.Read(root, now, TimeZoneInfo.Utc); Assert(result.Messages == 2 && result.RecordedDays == 2 && result.Incomplete); Near(result.Today?.Total, 85); Near(result.Last30Days?.Total, 181);
+        File.WriteAllText(Path.Combine(root, "a.jsonl"), Row("yesterday", 0, 0, date: "2026-10-20T10:00:00Z")); File.Delete(Path.Combine(root, "b.jsonl"));
+        Assert(ClaudeTokens.Read(root, now, TimeZoneInfo.Utc).Today is null);
+    } finally { Directory.Delete(root, true); }
+});
+Check("Claude absent or incomplete usage is unknown, never inferred from quota", () => {
+    var root = Path.Combine(Path.GetTempPath(), "AgentPaceTokens-" + Guid.NewGuid()); Assert(ClaudeTokens.Read(root, now).Last30Days is null); Directory.CreateDirectory(root);
+    try { File.WriteAllText(Path.Combine(root, "partial.jsonl"), """{"type":"assistant","timestamp":"2026-10-21T10:00:00Z","sessionId":"s","message":{"id":"m","usage":{"input_tokens":2,"output_tokens":3}}}"""); var result = ClaudeTokens.Read(root, now, TimeZoneInfo.Utc); Assert(result.Today is null && result.Last30Days is null && result.Incomplete); }
+    finally { Directory.Delete(root, true); }
+});
+Check("Claude explicit zero and fallback session identity remain exact", () => {
+    var root = Path.Combine(Path.GetTempPath(), "AgentPaceTokens-" + Guid.NewGuid()); Directory.CreateDirectory(root);
+    try {
+        var row = """{"type":"assistant","timestamp":"2026-10-21T10:00:00Z","sessionId":"s","message":{"id":"m","model":"real-model","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}""";
+        File.WriteAllLines(Path.Combine(root, "zero.jsonl"), [row, row, row.Replace("\"sessionId\":\"s\"", "\"sessionId\":\"other\""), row.Replace("real-model", "<synthetic>")]);
+        var result = ClaudeTokens.Read(root, now, TimeZoneInfo.Utc); Near(result.Today?.Total, 0); Assert(result.Messages == 2 && !result.Incomplete);
+    } finally { Directory.Delete(root, true); }
+});
 Check("sparse history does not invent patterns", () => { var p = new UsagePattern(new([new("2026-10-20", 100)]), now); Assert(!p.Sufficient && p.BusyWeekday is null && p.RecentRatio is null); });
 var days = Enumerable.Range(1, 30).Select(i => new DailyActivity(now.AddDays(-i).ToString("yyyy-MM-dd"), i <= 7 ? 200 : 100)).ToList();
 Check("recent trend uses observed valid days", () => { var p = new UsagePattern(new(days), now); Assert(p.Sufficient && p.HighDemandSoon); Near(p.RecentRatio, 2); });
@@ -130,7 +214,7 @@ ProcessStartInfo FakeStart(string mode)
     start.ArgumentList.Add(mode);
     return start;
 }
-await AsyncCheck("Codex JSON-RPC integration and optional history", async () => { var s = await CodexClient.Fetch(FakeStart("normal"), TimeSpan.FromSeconds(10)); Assert(s.Windows.Count == 1 && s.Activity?.DailyUsageBuckets?.Count == 1); Assert(!s.AccountKey.Contains("test@example.com")); });
+await AsyncCheck("Codex JSON-RPC integration preserves today and optional token summary", async () => { var s = await CodexClient.Fetch(FakeStart("normal"), TimeSpan.FromSeconds(10)); Assert(s.Windows.Count == 1 && s.Activity?.DailyUsageBuckets?.Count == 2); Near(s.Activity!.TodayTokens(s.FetchedAt), 50); Near(s.Activity.Summary!.LifetimeTokens, 150); Assert(s.Activity.Recent(s.FetchedAt).DailyUsageBuckets!.Count == 1); Assert(!s.AccountKey.Contains("test@example.com")); });
 await AsyncCheck("old Codex server without history still returns quota", async () => { var s = await CodexClient.Fetch(FakeStart("old"), TimeSpan.FromSeconds(10)); Assert(s.Windows.Count == 1 && s.Activity is null); });
 await AsyncCheck("unsolicited server requests are rejected", async () => { var s = await CodexClient.Fetch(FakeStart("approval"), TimeSpan.FromSeconds(10)); Assert(s.Windows.Count == 1); });
 await AsyncCheck("Codex hung process has a bounded timeout", async () => { var time = Stopwatch.StartNew(); try { await CodexClient.Fetch(FakeStart("hang"), TimeSpan.FromMilliseconds(500)); throw new Exception("Accepted hung process"); } catch (PaceException) { } Assert(time.Elapsed < TimeSpan.FromSeconds(5)); });
@@ -221,7 +305,7 @@ async Task Fake()
         }
         else if (method == "account/usage/read")
         {
-            Console.WriteLine(mode == "old" ? "{\"id\":4,\"error\":{\"code\":-32601}}" : "{\"id\":4,\"result\":{\"dailyUsageBuckets\":[{\"startDate\":\"" + DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd") + "\",\"tokens\":100}]}}");
+            Console.WriteLine(mode == "old" ? "{\"id\":4,\"error\":{\"code\":-32601}}" : JsonSerializer.Serialize(new { id = 4, result = new { dailyUsageBuckets = new[] { new { startDate = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd"), tokens = 100 }, new { startDate = DateTime.UtcNow.ToString("yyyy-MM-dd"), tokens = 50 } }, summary = new { lifetimeTokens = 150, peakDailyTokens = 100 } } }));
             return;
         }
         else if (method != "initialized")

@@ -64,13 +64,30 @@ availableToday = min(currentRemaining, dailyAllowance - observedUseSinceFirstSyn
 
 The daily allowance stays fixed until the next day, account/timezone change, a reset, or a decrease in reported usage. Small reset timestamp jitter preserves the baseline. Usage before first sync cannot be reconstructed. Overspending stays negative and is not deducted twice on the following day.
 
-When an available Codex reset credit expires within 72 hours and before the selected main Codex window's natural reset, the expiry becomes the planning deadline. The panel and tray show a rolling hourly suggestion instead of the daily balance: 50% remaining and a credit expiring in 10 hours gives **5% / hour**. During the final partial hour the app shows the actual remaining quota before expiry. When no credit meets these conditions, the normal daily budget remains in view. The calculation uses the earliest eligible credit and confirmed account data; unknown expiry times are never guessed.
+When an available Codex reset credit expires within 72 hours and before the selected main Codex window's natural reset, the expiry becomes the planning deadline. The panel and tray show a rolling hourly suggestion instead of the daily balance: 50% remaining and a credit expiring in 10 hours gives **5% / hour**. During the final partial hour the app shows the actual remaining quota before expiry. Outside this hourly view, a verified reset-inclusive daily plan is used when eligible; otherwise the normal daily budget remains in view. The calculation uses the earliest eligible credit and confirmed account data; unknown expiry times are never guessed.
 
 Credit expiry itself does **not** automatically reset quota. The natural reset remains separate. If the snapshot still lists a credit as available after its recorded expiry, refresh to confirm its status.
 
 Claude five-hour pacing uses `remaining / max(1, hoursUntilReset)`. With 60% left and three hours remaining, the allowance is **20% / hour**. With less than one hour left, the app shows the actual quota available before reset. These are percentage points, **not minutes of work**; other limits still apply.
 
 Missing data is never treated as zero. Cached/unconfirmed values are labeled and use `≈` in the hover summary. Expired windows wait for server confirmation instead of assuming restored quota.
+
+### Daily plan including reset credits
+
+A verified reset credit can contribute **100 percentage points of potential capacity** to a daily plan. If November 1 starts with 100% remaining and one credit expires on November 6, the six local calendar dates give `(100% + 100%) / 6 = 33.3% per day`. The daily allowance is frozen at the first observation and actual observed consumption is deducted. A same-day redemption keeps that spending record and removes the redeemed credit from the potential pool.
+
+Only the earliest known expiry batch is included, and only when it expires before the selected window resets naturally. Unknown, conflicting or expired credits never add capacity. Different expiry batches are not combined. Natural-reset capacity is not predicted. Within 72 hours, the existing hourly view stays primary; the reset-inclusive plan remains supporting information.
+
+The plan is **not an available balance**. Existing quota must be used and a reset redeemed before its potential allowance becomes available; redeeming early does not preserve unused quota. Actual remaining quota is displayed separately. Automatic redemption still only attempts in the final five minutes and does not redeem early to fulfill the daily plan. Only observed consumption is tracked; usage missed between snapshots cannot be reconstructed.
+
+### Actual token records
+
+The Token usage card is separate from quota percentages:
+
+- **Codex:** service-reported account token activity from `account/usage/read`, including today (UTC), the sum of returned days in the last 30 days, and lifetime tokens when supplied. Missing dates and totals stay unknown, with the number of covered days shown. Historical pattern analysis still excludes today.
+- **Claude Code:** locally retained assistant usage records in `~/.claude/projects` (Windows: `%USERPROFILE%\.claude\projects`), including desktop Code records when present there. Today and the last 30 local calendar dates include input, output, cache creation and cache reads; the breakdown is expandable. Duplicate request/message records are counted once, and explicitly identified Cowork records are excluded.
+
+Claude totals cover only retained local records and may include multiple accounts on this device; they are not attributed to the currently signed-in web organization or presented as cross-device account totals. Missing records are not zero. Partial or unreadable data is labeled. Scanning runs in the background with resource limits; it does not read credentials or save/upload conversation text. No percentage-to-token conversion or estimated billing is used. See the [Claude local directory documentation](https://code.claude.com/docs/en/claude-directory) and [usage history scope](https://code.claude.com/docs/en/costs).
 
 ### Use a reset credit in the app
 

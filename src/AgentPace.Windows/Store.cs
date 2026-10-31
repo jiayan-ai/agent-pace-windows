@@ -47,6 +47,10 @@ public sealed class Store : IDisposable
     public string Provider => History.SelectedProvider;
     public ProviderHistory Current => History.For(Provider);
     public bool Busy => busy.Contains(Provider);
+    public ClaudeTokenSnapshot? LocalClaudeTokens { get; private set; }
+    public bool TokensBusy { get; private set; }
+    public bool TokensFailed { get; private set; }
+    DateTimeOffset tokensNext = DateTimeOffset.MinValue;
     public bool Stale => !verified.Contains(Provider) || errors.ContainsKey(Provider) || Current.Snapshot is not { } s || (Now - s.FetchedAt).TotalSeconds is < 0 or > 600 || Provider == "codex" && HasExpiredCredit(Current, Now);
     static bool HasExpiredCredit(ProviderHistory history, DateTimeOffset now)
     {
@@ -60,6 +64,9 @@ public sealed class Store : IDisposable
     public CreditPace? CreditPace => Provider == "codex" ? AgentPace.Core.CreditPace.Evaluate(Current.Snapshot, Selected, Stale, Now) : null;
     public bool CreditNeedsConfirmation => Provider == "codex" && AgentPace.Core.CreditPace.NeedsConfirmation(Current.Snapshot, Selected, Stale, Now);
     public DailyBudget? Budget => Selected is { } w && w.Window.ResetDate > Now && Current.Snapshot is { } s && Current.Budgets.TryGetValue(s.AccountKey + "/" + w.Id, out var b) && b.Day == TimeZoneInfo.ConvertTime(Now, TimeZoneInfo.Local).ToString("yyyy-MM-dd") && b.TimeZoneId == TimeZoneInfo.Local.Id ? b : null;
+    public ResetPlanBudget? ResetPlan => !Stale && Selected is { } w && Current.Snapshot is { } s && Current.ResetPlans.TryGetValue(s.AccountKey + "/" + w.Id, out var b) && b.Day == TimeZoneInfo.ConvertTime(Now, TimeZoneInfo.Local).ToString("yyyy-MM-dd") && b.TimeZoneId == TimeZoneInfo.Local.Id && b.LeftToday(s, w, Now) is not null ? b : null;
+    public double? PlannedLeftToday => ResetPlan is { } p && Current.Snapshot is { } s && Selected is { } w ? p.LeftToday(s, w, Now) : null;
+    public bool DailyOverBudget => (ResetPlan?.OverBudget ?? Budget?.OverBudget) > 0;
     public string Summary
     {
         get
@@ -72,6 +79,8 @@ public sealed class Store : IDisposable
                 return name + " " + (credit.Allowance is { } a ? $"{L.Number(a)}%" + (credit.FinalHour ? " · <1h" : "/h") : L.T("待同步", "Pending"));
             if (Session is { } session)
                 return name + " " + (session.Allowance is { } a ? $"{mark}{L.Number(a)}%" + (session.FinalHour ? " · <1h" : "/h") : L.T("待同步", "Pending"));
+            if (PlannedLeftToday is { } planned)
+                return name + " " + L.Number(planned) + "%";
             return name + " " + (Budget is { } b ? $"{mark}{L.Number(b.LeftToday)}%" : L.T("待同步", "Pending"));
         }
     }
@@ -83,7 +92,7 @@ public sealed class Store : IDisposable
         {
             Settings = Storage.Read<Settings>("settings.json");
             History = Storage.Read<History>("state.json");
-            if (History.Providers is null || History.Providers.Values.Any(h => h is null || h.Budgets is null || h.Budgets.Values.Any(b => b is null) || h.Snapshot is { } snap && (snap.Windows is null || snap.Windows.Any(w => w is null))))
+            if (History.Providers is null || History.Providers.Values.Any(h => h is null || h.Budgets is null || h.Budgets.Values.Any(b => b is null) || h.ResetPlans is null || h.ResetPlans.Values.Any(b => b is null || b.CreditIds is null) || h.Snapshot is { } snap && (snap.Windows is null || snap.Windows.Any(w => w is null))))
                 throw new InvalidDataException();
             if (History.SelectedProvider is not ("codex" or "claude"))
                 History.SelectedProvider = "codex";
@@ -140,6 +149,8 @@ public sealed class Store : IDisposable
     }
     public async Task RefreshDue(bool force = false)
     {
+        if (force || Now >= tokensNext || LocalClaudeTokens is { } tokens &&
+            (tokens.Day != Now.ToString("yyyy-MM-dd") || tokens.TimeZoneId != TimeZoneInfo.Local.Id)) _ = RefreshTokens();
         foreach (var p in new[] { "codex", "claude" })
         {
             var state = History.For(p);
@@ -149,6 +160,19 @@ public sealed class Store : IDisposable
         }
         if (Settings.RadarEnabled && (force || Now >= radarNext))
             await RefreshRadar();
+    }
+    public async Task RefreshTokens()
+    {
+        if (demo || TokensBusy) return;
+        TokensBusy = true;
+        try { LocalClaudeTokens = await ClaudeTokens.ReadAsync(DateTimeOffset.Now, lifetime.Token); TokensFailed = false; }
+        catch (OperationCanceledException) { }
+        catch { TokensFailed = true; }
+        finally { TokensBusy = false; tokensNext = DateTimeOffset.Now.AddMinutes(5); Notify(); }
+    }
+    public async Task RefreshSelected()
+    {
+        await Task.WhenAll(Refresh(), Provider == "claude" ? RefreshTokens() : Task.CompletedTask);
     }
     public async Task Refresh(string? provider = null, bool resetOwned = false)
     {
@@ -466,8 +490,9 @@ public sealed class Store : IDisposable
     {
         var now = Now;
         var end = now.AddDays(6).ToUnixTimeSeconds();
-        History.For("codex").Ingest(new("demo-codex", now, [new("codex", "Codex", "primary", new(17, 10080, end))], new(2, [])));
+        History.For("codex").Ingest(new("demo-codex", now, [new("codex", "Codex", "primary", new(17, 10080, end))], new(2, []), new([new(now.UtcDateTime.ToString("yyyy-MM-dd"), 125000), new(now.UtcDateTime.AddDays(-1).ToString("yyyy-MM-dd"), 300000)], new(425000, 300000))));
         History.For("claude").Ingest(new("demo-claude", now, [new("claude", "Claude", "primary", new(33, 10080, end)), new("claude", "Claude", "secondary", new(40, 300, now.AddHours(3).ToUnixTimeSeconds())), new("claude_fable", "Claude Fable", "primary", new(42, 10080, end))]));
+        LocalClaudeTokens = new(now, ClaudeTokens.DefaultRoot, TimeZoneInfo.Local.Id, now.ToString("yyyy-MM-dd"), new(1000, 2000, 3000, 4000), new(20000, 30000, 40000, 50000), 8, 100, false);
         verified.UnionWith(["codex", "claude"]);
     }
     public void Dispose()

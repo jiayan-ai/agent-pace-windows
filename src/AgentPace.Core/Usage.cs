@@ -123,6 +123,7 @@ public sealed class ProviderHistory
         get; set;
     }
     public Dictionary<string, DailyBudget> Budgets { get; set; } = [];
+    public Dictionary<string, ResetPlanBudget> ResetPlans { get; set; } = [];
     public string SelectedId { get; set; } = "";
     public AccountActivity? Activity
     {
@@ -137,24 +138,30 @@ public sealed class ProviderHistory
         if (Snapshot?.AccountKey != current.AccountKey)
         {
             Budgets.Clear();
+            ResetPlans.Clear();
             Activity = null;
             ActivityFetchedAt = null;
         }
-        if (current.Activity?.DailyUsageBuckets is not null)
+        if (current.Activity is { } activity && (activity.DailyUsageBuckets is not null || activity.Summary is not null))
         {
-            Activity = current.Activity.Recent(current.FetchedAt);
+            Activity = activity.Clean(current.FetchedAt);
             ActivityFetchedAt = current.FetchedAt;
         }
         Snapshot = current;
         var next = new Dictionary<string, DailyBudget>();
+        var plans = new Dictionary<string, ResetPlanBudget>();
         foreach (var w in current.Windows)
         {
             var key = current.AccountKey + "/" + w.Id;
             Budgets.TryGetValue(key, out var previous);
             if (DailyBudget.Reconcile(previous, w.Window, current.FetchedAt) is { } b)
                 next[key] = b;
+            ResetPlans.TryGetValue(key, out var previousPlan);
+            if (ResetPlanBudget.Reconcile(previousPlan, current, w, current.FetchedAt) is { } plan)
+                plans[key] = plan;
         }
         Budgets = next;
+        ResetPlans = plans;
         if (!current.Windows.Any(w => w.Id == SelectedId))
             SelectedId = current.Windows.FirstOrDefault()?.Id ?? "";
     }

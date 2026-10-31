@@ -143,7 +143,7 @@ public static class CodexClient
                         try
                         {
                             if (m.Get("result") is { } r)
-                                activity = r.Deserialize<AccountActivity>(Json.Options)?.Recent(quota.FetchedAt);
+                                activity = r.Deserialize<AccountActivity>(Json.Options)?.Clean(quota.FetchedAt);
                         }
                         catch (JsonException) { }
                         return new(quota with { Activity = activity }, null);
