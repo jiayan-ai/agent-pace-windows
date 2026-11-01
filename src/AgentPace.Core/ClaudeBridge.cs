@@ -31,22 +31,30 @@ public static class ClaudeBridge
         const resultUsage = await get('/api/organizations/' + encodeURIComponent(org.uuid) + '/usage');
         if (resultUsage.status !== 200) return JSON.stringify({status:resultUsage.status, retryAfter:resultUsage.retryAfter, organizations});
         const usage = {};
-        for (const key of ['five_hour','seven_day','seven_day_sonnet','seven_day_opus']) {
-            const window = resultUsage.data?.[key];
-            if (window && typeof window.utilization === 'number' && Number.isFinite(window.utilization)) {
-                usage[key] = {utilization:window.utilization, resets_at:typeof window.resets_at === 'string' ? window.resets_at : null};
-            }
+        const limits = Array.isArray(resultUsage.data?.limits) ? resultUsage.data.limits : [];
+        const specifications = [
+            ['five_hour', row => row?.kind === 'session'],
+            ['seven_day', row => row?.kind === 'weekly_all'],
+            ['seven_day_fable', row => row?.kind === 'weekly_scoped' && row?.scope?.model?.display_name === 'Fable'],
+            ['seven_day_sonnet', row => row?.kind === 'weekly_scoped' && row?.scope?.model?.display_name === 'Sonnet'],
+            ['seven_day_opus', row => row?.kind === 'weekly_scoped' && row?.scope?.model?.display_name === 'Opus']
+        ];
+        // A matching modern row owns its window, including explicit inactivity.
+        // Ambiguous or malformed rows must never revive legacy fallback data.
+        for (const [key, matches] of specifications) {
+            const rows = limits.filter(matches);
+            if (rows.length > 1) continue;
+            const window = rows.length === 1 ? rows[0] : key === 'seven_day_fable' ? null : resultUsage.data?.[key];
+            if (!window || typeof window !== 'object' || Array.isArray(window)) continue;
+            if (window.is_active !== undefined && window.is_active !== true) continue;
+            const percent = rows.length === 1 ? window.percent : window.utilization;
+            if (typeof percent === 'number' && Number.isFinite(percent) && percent >= 0)
+                usage[key] = {utilization:percent, resets_at:typeof window.resets_at === 'string' ? window.resets_at : null};
         }
-        // Current Claude usage identifies Fable through a model-scoped weekly
-        // limit. Internal bucket codenames are not a stable model identifier.
-        const fable = Array.isArray(resultUsage.data?.limits) ? resultUsage.data.limits.filter(row =>
-            row?.kind === 'weekly_scoped' && row?.scope?.model?.display_name === 'Fable') : [];
-        if (fable.length === 1 && typeof fable[0].percent === 'number' &&
-            Number.isFinite(fable[0].percent) && fable[0].percent >= 0) {
-            usage.seven_day_fable = {utilization:fable[0].percent,
-                resets_at:typeof fable[0].resets_at === 'string' ? fable[0].resets_at : null};
-        }
-        return JSON.stringify({status:200, organizations, organization:org.uuid, usage});
+        const noActiveLimits = Object.keys(usage).length === 0 && limits.length > 0 &&
+            limits.some(row => specifications.some(([, matches]) => matches(row))) &&
+            limits.every(row => row?.is_active === false);
+        return JSON.stringify({status:200, organizations, organization:org.uuid, usage, noActiveLimits});
     } catch { return JSON.stringify({status:503}); }
     finally { clearTimeout(timer); }
 

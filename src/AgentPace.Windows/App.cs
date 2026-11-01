@@ -81,7 +81,7 @@ public sealed class App : Application
         if (tray is null || store is null)
             return;
         var summary = store.Summary;
-        var tooltip = summary + "\n" + (store.CreditNeedsConfirmation ? L.T("等待刷新确认 Reset 券", "Awaiting reset credit confirmation") : store.CreditPace is { } pace ? L.T("Reset 券到期：", "Reset credit expires in: ") + pace.Countdown : store.Session?.Countdown ?? L.Date(store.Selected?.Window.ResetDate));
+        var tooltip = summary + "\n" + (store.NoActiveClaudeWindows ? (store.Stale ? L.T("上次记录：没有启用的额度窗口", "Last known: no active usage windows") : L.T("当前没有启用的额度窗口", "No active usage windows")) : store.CreditNeedsConfirmation ? L.T("等待刷新确认 Reset 券", "Awaiting reset credit confirmation") : store.CreditPace is { } pace ? L.T("Reset 券到期：", "Reset credit expires in: ") + pace.Countdown : store.Session?.Countdown ?? L.Date(store.Selected?.Window.ResetDate));
         tray.Text = tooltip.Length > 127 ? tooltip[..127] : tooltip;
         var remaining = store.Selected?.Window.Remaining;
         var overBudget = !store.CreditNeedsConfirmation && store.CreditPace is null && store.DailyOverBudget;
@@ -165,7 +165,23 @@ public sealed class App : Application
                 using var file = File.Create(Path.Combine(output, $"{provider}-{language}.png"));
                 encoder.Save(file);
             }
-            store!.SelectProvider("codex");
+            store!.SelectProvider("claude");
+            var claude = store.Current.Snapshot!;
+            store.Current.Ingest(claude with { Windows = claude.Windows.Where(w => w.Window.WindowDurationMins != 300).ToList() });
+            if (store.Session is not null || store.Selected?.Window.WindowDurationMins == 300)
+                throw new InvalidOperationException("Disabled session window remained selected");
+            store.Current.Ingest(claude with { Windows = [] });
+            foreach (var language in new[] { "en", "zh-Hans" })
+            {
+                store.Language(language);
+                details!.Render();
+                details.UpdateLayout();
+                var content = TextContent(details);
+                if (!content.Contains(language == "en" ? "No active usage windows" : "当前没有启用的额度窗口") || content.Contains(language == "en" ? "Waiting for usage data" : "等待额度数据") || store.Selected is not null)
+                    throw new InvalidOperationException("Confirmed empty Claude window rendering failed");
+            }
+            store.Current.Ingest(claude);
+            store.SelectProvider("codex");
             var codex = store.Current.Snapshot!;
             store.Current.Ingest(codex with { Credits = new(1, [new("demo-plan", "codexRateLimits", "available", null, store.Now.AddDays(5).ToUnixTimeSeconds(), null, null)]) });
             store.Language("en");

@@ -165,7 +165,28 @@ Check("Claude Fable zero is valid and independently scoped", () => { using var d
 Check("Claude requires organization membership", () => { using var d = JsonDocument.Parse(ClaudeReply().Replace("\"organizations\":[{\"uuid\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Test\"}]", "\"organizations\":[]")); try { UsageParser.Claude(d.RootElement, now); throw new Exception("Accepted missing membership"); } catch (PaceException) { } });
 Check("Claude auth and rate-limit errors are typed", () => { foreach (var status in new[] { 401, 403, 409, 429 }) { using var d = JsonDocument.Parse(ClaudeReply(status)); try { UsageParser.Claude(d.RootElement, now); throw new Exception("Accepted HTTP error"); } catch (PaceException e) { Assert(status == 429 ? e.RetrySeconds >= 300 : e.NeedsLogin); } } });
 Check("Claude origin is exact and HTTPS-only", () => { Assert(ClaudeBridge.IsClaude("https://claude.ai/settings/usage")); foreach (var s in new[] { "http://claude.ai/", "https://claude.ai.evil.test/", "https://claude.ai:444/", "https://evil@claude.ai/" }) Assert(!ClaudeBridge.IsClaude(s)); });
-Check("Claude bridge filters payload and uses GET only", () => { Assert(ClaudeBridge.Script.Contains("method:'GET'") && !ClaudeBridge.Script.Contains("document.cookie") && ClaudeBridge.Script.Contains("fable.length === 1") && ClaudeBridge.Script.Contains("display_name === 'Fable'")); });
+Check("Claude bridge filters payload and uses GET only", () => { Assert(ClaudeBridge.Script.Contains("method:'GET'") && !ClaudeBridge.Script.Contains("document.cookie") && ClaudeBridge.Script.Contains("rows.length > 1") && ClaudeBridge.Script.Contains("display_name === 'Fable'")); });
+string NormalizedClaude(string usage, object? inactive = null) => JsonSerializer.Serialize(new { status = 200, organization = "00000000-0000-0000-0000-000000000001", organizations = new[] { new { uuid = "00000000-0000-0000-0000-000000000001" } }, usage = JsonDocument.Parse(usage).RootElement, noActiveLimits = inactive });
+Check("confirmed inactive Claude snapshot clears selected window and saved budgets", () => {
+    using var initial = JsonDocument.Parse(ClaudeReply()); var h = new ProviderHistory(); h.Ingest(UsageParser.Claude(initial.RootElement, now)); h.SelectedId = "claude/secondary";
+    using var weekly = JsonDocument.Parse(NormalizedClaude("""{"seven_day":{"utilization":3,"resets_at":"2026-10-28T12:00:00Z"}}""")); h.Ingest(UsageParser.Claude(weekly.RootElement, now));
+    Assert(h.SelectedId == "claude/primary" && h.Snapshot!.Windows.Count == 1 && !h.Budgets.Keys.Any(k => k.EndsWith("claude/secondary")));
+    using var empty = JsonDocument.Parse(NormalizedClaude("{}", true)); h.Ingest(UsageParser.Claude(empty.RootElement, now));
+    Assert(h.Snapshot!.Windows.Count == 0 && h.SelectedId == "" && h.Budgets.Count == 0);
+    var saved = JsonSerializer.Deserialize<ProviderHistory>(JsonSerializer.Serialize(h, Json.Options), Json.Options)!;
+    Assert(saved.Snapshot!.Windows.Count == 0 && saved.SelectedId == "");
+});
+Check("unknown or malformed Claude empty data never clears history", () => {
+    foreach (var payload in new[] { NormalizedClaude("{}"), NormalizedClaude("{}", "true"), NormalizedClaude("{}", false), NormalizedClaude("null", true), NormalizedClaude("[]", true), NormalizedClaude("""{"five_hour":{"utilization":null}}""", true) }) {
+        using var d = JsonDocument.Parse(payload); try { UsageParser.Claude(d.RootElement, now); throw new Exception("Accepted unconfirmed empty limits"); } catch (PaceException) { }
+    }
+});
+Check("parser never restores explicitly inactive or malformed active flags", () => {
+    foreach (var flag in new[] { "false", "null", "0", "\"true\"" }) {
+        using var d = JsonDocument.Parse(NormalizedClaude("{\"five_hour\":{\"utilization\":0,\"is_active\":" + flag + "},\"seven_day\":{\"utilization\":0,\"is_active\":true}}"));
+        var s = UsageParser.Claude(d.RootElement, now); Assert(s.Windows.Count == 1 && s.Windows[0].Window.WindowDurationMins == 10080); Near(s.Windows[0].Window.Remaining, 100);
+    }
+});
 Check("missing activity is distinct from an empty history", () => { Assert(new AccountActivity(null).Recent(now).DailyUsageBuckets is null); Assert(new AccountActivity([]).Recent(now).DailyUsageBuckets!.Count == 0); });
 Check("activity excludes today, invalid dates and duplicates", () => { var a = new AccountActivity([new("2026-10-21", 999), new("2026-10-20", 100), new("2026-10-20", 150), new("2026-02-30", 2), new("2026-10-19", double.NaN)]).Recent(now); Assert(a.DailyUsageBuckets!.Count == 1); Near(a.DailyUsageBuckets[0].Tokens, 150); });
 Check("token activity preserves today and summary independently of history patterns", () => {

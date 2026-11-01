@@ -213,9 +213,9 @@ public static class UsageParser
             throw PaceException.Invalid();
         var windows = new List<MeteredWindow>();
         foreach (var (key, id, name, slot, mins) in new[] { ("five_hour", "claude", "Claude", "secondary", 300), ("seven_day", "claude", "Claude", "primary", 10080), ("seven_day_fable", "claude_fable", "Claude Fable", "primary", 10080), ("seven_day_sonnet", "claude_sonnet", "Claude Sonnet", "primary", 10080), ("seven_day_opus", "claude_opus", "Claude Opus", "primary", 10080) })
-            if (usage.Get(key) is { } w && w.Num("utilization") is { } used && used >= 0)
+            if (usage.Get(key) is { } w && (w.Get("is_active") is null or { ValueKind: JsonValueKind.True }) && w.Num("utilization") is { } used && used >= 0)
                 windows.Add(new(id, name, slot, new(used, mins, Json.Date(w.Str("resets_at"))?.ToUnixTimeMilliseconds() / 1000d)));
-        if (windows.Count == 0)
+        if (windows.Count == 0 && !(usage is { ValueKind: JsonValueKind.Object } && !usage.EnumerateObject().Any() && reply.Get("noActiveLimits") is { ValueKind: JsonValueKind.True }))
             throw new PaceException("Claude 尚未返回订阅额度。", "Claude has not returned subscription quota.");
         return new(Hash("claude-web/" + org!.ToLowerInvariant()), now, Sort(windows));
     }

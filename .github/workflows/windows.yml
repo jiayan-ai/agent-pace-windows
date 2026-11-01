@@ -19,6 +19,11 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Core and protocol regression checks
         run: dotnet run --project tests/AgentPace.Checks -c Release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Claude quota bridge regression checks
+        run: node tests/claude-bridge-checks.mjs
       - name: Package standalone x64 application
         shell: pwsh
         run: ./scripts/package.ps1

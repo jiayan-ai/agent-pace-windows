@@ -2,7 +2,7 @@
 
 English · [简体中文](README.zh-CN.md) · [macOS version](https://github.com/jiayan-ai/agent-pace-mac)
 
-A native Windows tray app for pacing **Codex and Claude subscription usage**, built with **C#, WPF and WebView2**. Know what you can use today, your suggested hourly allowance in Claude's five-hour window, and when the next reset happens.
+A native Windows tray app for pacing **Codex and Claude subscription usage**, built with **C#, WPF and WebView2**. Know what you can use today, your suggested hourly allowance when Claude enables a five-hour window, and when the next reset happens.
 
 [Downloads](https://github.com/jiayan-ai/agent-pace-windows/releases) · [Build checks](https://github.com/jiayan-ai/agent-pace-windows/actions)
 
@@ -24,7 +24,7 @@ The tray uses a quota progress icon and a hover summary. Click it for details. W
 
 - Codex / Claude provider switch with independent account and window history.
 - Fixed daily budgets for weekly windows, negative overspending, and a red details balance.
-- Claude five-hour rolling hourly allowance with a highlighted reset countdown. The final partial hour shows actual remaining quota; expiration waits for a fresh server response.
+- Claude five-hour rolling hourly allowance when the account enables that window, with a highlighted reset countdown. The final partial hour shows actual remaining quota; expiration waits for a fresh server response.
 - Fable, Sonnet and Opus weekly windows when the account reports them. Fable is identified by an explicit model-scoped weekly limit, not an internal codename.
 - Codex reset credit counts, expiry details and local rule-based advice using 30 days of account activity.
 - Use a specific Codex reset credit directly in the app, with confirmation before it is spent.
@@ -49,7 +49,7 @@ The WebView2 session persists across launches. Agent Pace does not read Claude D
 
 The quota script runs in a separate JavaScript execution world on the exact `https://claude.ai` origin. Only organization and allowlisted quota fields cross into the app. It uses same-origin GET requests; no cookie export, page-message bridge or native host object is exposed. **Disconnect Claude** stops syncing, clears this app's browsing data and removes its cached Claude quota history.
 
-Claude's apps share subscription limits. The app cannot isolate usage caused only by Desktop Code. Fable usage also counts toward the overall weekly quota and is constrained by the five-hour limit.
+Claude's apps share subscription limits. The app cannot isolate usage caused only by Desktop Code. Fable usage also counts toward the overall weekly quota; other limits depend on the account's current response. Modern `limits` rows take precedence over matching legacy fields. A window marked `is_active: false` is hidden, including a disabled five-hour window still present in legacy data. Active zero-percent windows remain visible. The app uses returned activity flags, not plan names, to determine which windows apply. If all returned limits are explicitly inactive, the confirmed empty result clears old windows; unknown or malformed responses retain the last known data with an unconfirmed status.
 
 ## Pacing
 
@@ -68,7 +68,7 @@ When an available Codex reset credit expires within 72 hours and before the sele
 
 Credit expiry itself does **not** automatically reset quota. The natural reset remains separate. If the snapshot still lists a credit as available after its recorded expiry, refresh to confirm its status.
 
-Claude five-hour pacing uses `remaining / max(1, hoursUntilReset)`. With 60% left and three hours remaining, the allowance is **20% / hour**. With less than one hour left, the app shows the actual quota available before reset. These are percentage points, **not minutes of work**; other limits still apply.
+When the account enables a five-hour window, Claude pacing uses `remaining / max(1, hoursUntilReset)`. With 60% left and three hours remaining, the allowance is **20% / hour**. With less than one hour left, the app shows the actual quota available before reset. These are percentage points, **not minutes of work**; other limits still apply.
 
 Missing data is never treated as zero. Cached/unconfirmed values are labeled and use `≈` in the hover summary. Expired windows wait for server confirmation instead of assuming restored quota.
 
@@ -123,7 +123,7 @@ dotnet build src/AgentPace.Windows -c Release
 pwsh scripts/package.ps1
 ```
 
-The core tests can run on macOS/Linux. WPF execution requires Windows. `--demo` uses synthetic data in a fresh temporary directory. `--smoke-test` renders both languages and exercises window opening with synthetic data, then exits with a test status. Never use private account state in CI.
+The core tests can run on macOS/Linux. `node tests/claude-bridge-checks.mjs` runs the shipped quota bridge against synthetic responses, covering active flags, modern/legacy precedence, duplicate rows and confirmed empty windows. WPF execution requires Windows. `--demo` uses synthetic data in a fresh temporary directory. `--smoke-test` renders both languages and exercises window opening with synthetic data, then exits with a test status. Never use private account state in CI.
 
 The Windows workflow produces a self-contained x64 ZIP, per-user installer and SHA-256 checksums. Inno Setup 6 is required to build the installer. Code signing is intentionally not claimed or simulated. See [architecture](docs/ARCHITECTURE.md) and [validation](docs/VALIDATION.md).
 

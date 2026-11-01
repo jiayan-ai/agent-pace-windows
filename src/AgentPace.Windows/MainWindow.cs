@@ -138,6 +138,8 @@ public sealed class MainWindow : Window
                     Insights(root);
                 }
             }
+            else if (store.NoActiveClaudeWindows)
+                root.Children.Add(Card(Text(L.T("当前没有启用的额度窗口", "No active usage windows"), 22, true), Text(store.Stale ? L.T("上次账户返回没有启用的额度窗口，正在等待最新同步。", "The last account response had no active usage windows; awaiting a fresh sync.") : L.T("账户已确认当前没有启用的额度窗口。", "The account confirms that no usage windows are currently active."), 13, false, muted)));
             else
                 root.Children.Add(Card(Text(store.Busy ? L.T("正在读取额度…", "Reading usage…") : L.T("等待额度数据", "Waiting for usage data"), 22, true), Text(store.Provider == "codex" ? L.T("安装并登录 Codex CLI；可在设置中指定 codex.exe 或 WSL 发行版。", "Install and sign in to Codex CLI. Settings accepts codex.exe or a WSL distribution.") : L.T("在工具内登录 Claude 后自动同步。", "Connect Claude in this app to sync automatically."), 13, false, muted)));
             Tokens(root);
@@ -160,7 +162,7 @@ public sealed class MainWindow : Window
             footer.Children.Add(Button(L.T("退出", "Quit"), () => ((App)Application.Current).ExitApp()));
             root.Children.Add(footer);
             root.Children.Add(Text(L.T($"{store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} 更新 · 每 5 分钟同步", $"Updated {store.Current.Snapshot?.FetchedAt.ToLocalTime():HH:mm} · Syncs every 5 min"), 11, false, muted));
-            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.7" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
+            root.Children.Add(Text("Agent Pace for Windows · 1.0.0-beta.8" + (Topmost ? " · " + L.T("已置顶", "Pinned") : ""), 10, false, muted));
             scroll.Content = root;
             scroll.ScrollToVerticalOffset(offset);
         }
@@ -183,7 +185,7 @@ public sealed class MainWindow : Window
         var color = store.DailyOverBudget ? Brushes.IndianRed : accent;
         root.Children.Add(Card(Text((store.DailyOverBudget ? L.T("今日预算已超额", "Over today's budget") : plan is not null ? L.T("今天计划还可以用", "Planned allowance today") : L.T("今天还可以用", "Available today")) + (store.Stale ? L.T(" · 上次记录", " · Last known") : ""), 16, true, muted), Text(L.Number(store.PlannedLeftToday ?? b?.LeftToday) + "%", 56, true, color), Text(plan is not null ? L.T("含 Reset 的计划预算；用券后才能恢复额外额度", "Plan includes resets; redeem to restore the extra quota") : selected.BucketId == "claude_fable" ? L.T("占 Fable 周额度的百分比", "Percentage of Fable weekly quota") : L.T("占本周期总额度的百分比", "Percentage of this window's quota"), 12, false, muted)));
         if (selected.BucketId == "claude_fable")
-            root.Children.Add(Text(L.T("Fable 使用也计入总周额度，仍受五小时额度限制。", "Fable also counts toward the overall weekly quota and remains subject to the five-hour limit."), 12, false, muted));
+            root.Children.Add(Text(L.T("Fable 使用也计入总周额度；其他限制以账户实际返回为准。", "Fable also counts toward the overall weekly quota; other limits depend on the account's current response."), 12, false, muted));
         var metrics = new UniformGridShim(2);
         var left = new StackPanel();
         left.Children.Add(Text(L.T("周期剩余", "Remaining"), 13, false, muted));

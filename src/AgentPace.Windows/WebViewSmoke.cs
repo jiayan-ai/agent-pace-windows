@@ -26,6 +26,7 @@ internal static class WebViewSmoke
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             const string org = "00000000-0000-0000-0000-000000000001";
             var requests = new List<string>();
+            var usageFixture = """{"five_hour":{"utilization":40,"resets_at":"2026-10-21T15:00:00Z"},"limits":[{"kind":"weekly_scoped","percent":0,"resets_at":"2026-10-28T12:00:00Z","scope":{"model":{"display_name":"Fable"}}}],"secret":"must not cross the bridge"}""";
             core.WebResourceRequested += (_, e) =>
             {
                 var uri = new Uri(e.Request.Uri);
@@ -36,7 +37,7 @@ internal static class WebViewSmoke
                 else if (uri.AbsolutePath == "/api/organizations")
                     json = JsonSerializer.Serialize(new[] { new { uuid = org, name = "Synthetic account" } });
                 else if (uri.AbsolutePath.EndsWith("/usage"))
-                    json = """{"five_hour":{"utilization":40,"resets_at":"2026-10-21T15:00:00Z"},"limits":[{"kind":"weekly_scoped","percent":0,"resets_at":"2026-10-28T12:00:00Z","scope":{"model":{"display_name":"Fable"}}}],"secret":"must not cross the bridge"}""";
+                    json = usageFixture;
                 else if (uri.AbsolutePath == "/index.html")
                 {
                     e.Response = env.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<!doctype html><title>Synthetic quota fixture</title>")), 200, "Fixture", "Content-Type: text/html");
@@ -57,6 +58,15 @@ internal static class WebViewSmoke
             var snapshot = UsageParser.Claude(data.RootElement, DateTimeOffset.UtcNow);
             if (snapshot.Windows.Count != 2 || snapshot.Windows.Single(w => w.BucketId == "claude_fable").Window.Remaining != 100)
                 throw new InvalidOperationException("WebView quota normalization failed");
+            usageFixture = """{"five_hour":{"utilization":2,"resets_at":"2026-11-01T18:00:00Z"},"limits":[{"kind":"session","percent":2,"is_active":false},{"kind":"weekly_all","percent":3,"is_active":true},{"kind":"weekly_scoped","percent":2,"is_active":false,"scope":{"model":{"display_name":"Fable"}}}]}""";
+            using var inactive = JsonDocument.Parse(await ClaudeSession.EvaluateBridge(core, "", timeout.Token));
+            var current = UsageParser.Claude(inactive.RootElement, DateTimeOffset.UtcNow);
+            if (current.Windows.Count != 1 || current.Windows[0].Id != "claude/primary" || current.Windows[0].Window.UsedPercent != 3)
+                throw new InvalidOperationException("Inactive modern limits revived legacy windows");
+            usageFixture = """{"limits":[{"kind":"session","is_active":false},{"kind":"weekly_all","is_active":false}]}""";
+            using var allInactive = JsonDocument.Parse(await ClaudeSession.EvaluateBridge(core, "", timeout.Token));
+            if (UsageParser.Claude(allInactive.RootElement, DateTimeOffset.UtcNow).Windows.Count != 0)
+                throw new InvalidOperationException("Confirmed inactive limits did not clear windows");
             if (!requests.Contains("GET /api/organizations") || !requests.Contains("GET /api/organizations/"+org+"/usage") || requests.Any(r => !r.StartsWith("GET ")))
                 throw new InvalidOperationException("Unexpected write request");
             var mismatch = await ClaudeSession.EvaluateBridge(core, "00000000-0000-0000-0000-000000000002", timeout.Token);

@@ -58,6 +58,7 @@ public sealed class Store : IDisposable
         return AgentPace.Core.CreditPace.HasExpiredCreditRequiringConfirmation(history.Snapshot, selected, now);
     }
     public bool CreditExpired => Provider == "codex" && HasExpiredCredit(Current, Now);
+    public bool NoActiveClaudeWindows => Provider == "claude" && Current.Snapshot?.Windows.Count == 0;
     public PaceException? Error => errors.GetValueOrDefault(Provider);
     public MeteredWindow? Selected => Current.Snapshot?.Windows.FirstOrDefault(w => w.Id == Current.SelectedId) ?? Current.Snapshot?.Windows.FirstOrDefault();
     public SessionPace? Session => Provider == "claude" && Selected?.Window.WindowDurationMins == 300 ? new(Selected.Window, Now) : null;
@@ -73,6 +74,8 @@ public sealed class Store : IDisposable
         {
             var name = Selected?.BucketId == "claude_fable" ? "Fable" : Provider == "claude" ? "Claude" : "Codex";
             var mark = Stale ? "≈" : "";
+            if (NoActiveClaudeWindows && !Stale)
+                return name + " " + L.T("无启用限额", "No active limits");
             if (CreditNeedsConfirmation)
                 return name + " " + L.T("待同步", "Pending");
             if (CreditPace is { } credit)
